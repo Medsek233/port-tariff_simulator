@@ -182,17 +182,52 @@ with tabs[1]:
     st.plotly_chart(bar2("", tot_pil_tm, tot_pil_nwm, "Pilotage"), use_container_width=True)
 
     with st.expander("📈 Courbe pilotage E+S par taille navire"):
-        gts_r = list(range(5000, 120001, 5000))
+        st.caption("""
+        **Méthode:** On utilise les proportions du navire saisi (LOA/beam/draft) comme référence,
+        puis on fait varier la taille par un facteur d'échelle. Le VG est recalculé à chaque point
+        via la formule officielle VG = L × b × Te. Le GT est estimé via le ratio GT/VG du navire de référence.
+        """)
+        # Ratio réel GT/VG du navire saisi
+        ratio_gt_vg = gt / vg if vg > 0 else 0.3
+        # Gamme de GT cible de 5k à 150k
+        gts_target = list(range(5000, 150001, 2500))
         c_tm, c_nwm = [], []
-        for g in gts_r:
-            v = g * 4.5
-            c_tm.append(calc_pilotage_tm(v, "Entrée") + calc_pilotage_tm(v, "Sortie"))
-            c_nwm.append(calc_pilotage_nwm_entree_sortie(g) * 2)
+        for g_t in gts_target:
+            # VG dérivé du ratio du navire de référence
+            vg_t = g_t / ratio_gt_vg
+            c_tm.append(calc_pilotage_tm(vg_t, "Entrée") + calc_pilotage_tm(vg_t, "Sortie"))
+            c_nwm.append(calc_pilotage_nwm_entree_sortie(g_t) * 2)
         fig = go.Figure()
-        fig.add_trace(go.Scatter(x=gts_r, y=c_tm, name="Tanger Med", line=dict(color=TM_C, width=3)))
-        fig.add_trace(go.Scatter(x=gts_r, y=c_nwm, name="NWM", line=dict(color=NWM_C, width=3)))
-        fig.update_layout(xaxis_title="GT", yaxis_title="Pilotage E+S (€)", height=380)
+        fig.add_trace(go.Scatter(x=gts_target, y=c_tm, name="Tanger Med (barème VG)", line=dict(color=TM_C, width=3)))
+        fig.add_trace(go.Scatter(x=gts_target, y=c_nwm, name="NWM (formule GT)", line=dict(color=NWM_C, width=3, dash="dash")))
+        # Marqueur pour le navire actuel
+        pil_now_tm = calc_pilotage_tm(vg, "Entrée") + calc_pilotage_tm(vg, "Sortie")
+        pil_now_nwm = calc_pilotage_nwm_entree_sortie(gt) * 2
+        fig.add_trace(go.Scatter(x=[gt, gt], y=[pil_now_tm, pil_now_nwm],
+            mode="markers", marker=dict(size=12, symbol="diamond"),
+            name=f"Navire actuel (GT={gt:,})", showlegend=True))
+        fig.update_layout(xaxis_title="GT (axe de référence)", yaxis_title="Pilotage Entrée+Sortie (€)", height=420,
+            annotations=[dict(x=gt, y=max(pil_now_tm, pil_now_nwm)*1.08,
+                text=f"Votre navire<br>GT={gt:,} / VG={vg:,.0f}m³", showarrow=False, font=dict(size=11))])
         st.plotly_chart(fig, use_container_width=True)
+
+        # Trouver le point d'inflexion tranche 1 → tranche 2
+        vg_seuil = 180000
+        gt_seuil = vg_seuil * ratio_gt_vg
+        pil_t1 = calc_pilotage_tm(vg_seuil, "Entrée") + calc_pilotage_tm(vg_seuil, "Sortie")
+        pil_t2 = calc_pilotage_tm(vg_seuil + 1, "Entrée") + calc_pilotage_tm(vg_seuil + 1, "Sortie")
+        if abs(pil_t1 - pil_t2) > 200:
+            st.warning(f"""
+            ⚠️ **Discontinuité détectée dans le barème TM** à VG ≈ 180 000 m³ (GT ≈ {gt_seuil:,.0f} pour ce type de navire).
+            La 2ème tranche du cahier tarifaire TM redémarre à un niveau inférieur:
+            - Fin tranche 1 (VG=180k): Entrée+Sortie = **{pil_t1:,.0f}€**
+            - Début tranche 2 (VG=180k+1): Entrée+Sortie = **{pil_t2:,.0f}€**
+            - Écart: **{pil_t1 - pil_t2:,.0f}€** → Avantage significatif pour les très grands navires à TM
+            """)
+
+        st.info(f"**Ratio de référence:** GT/VG = {ratio_gt_vg:.4f} (basé sur votre navire: GT={gt:,} / VG={vg:,.0f}m³). "
+                f"TM utilise le VG (m³), NWM utilise les GTs — les deux assiettes sont liées par les proportions de votre navire. "
+                f"Ce ratio varie selon le type de navire: un porte-conteneurs aura un ratio différent d'un tanker ou d'un ferry.")
 
     with st.expander("📜 Majorations & Exonérations"):
         st.markdown("""
