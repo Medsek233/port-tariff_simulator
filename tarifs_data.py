@@ -528,3 +528,248 @@ def calc_stationnement(vg, taux_base, sejour_h, en_rade=False, jour_rade=0):
     if en_rade and jour_rade >= 1:
         return base * 0.5
     return base
+
+# ═════════════════════════════════════════════════════════════════════════════
+# ALGECIRAS — DONNÉES TARIFAIRES 2024
+# Source: tarifasAlgeciras.pdf + pilotage_fess_algeciras2024.pdf
+# Base légale: Décret Royal 2/2011 (Loi Ports d'État)
+# ═════════════════════════════════════════════════════════════════════════════
+
+ALG_C = "#2E7D32"  # Couleur Algeciras (vert)
+
+# ─── T0: Aides à la Navigation ──────────────────────────────────────────────
+# Navires marchands (max 3 escales/an): Coef 0.035, Total 0.02 €/GT
+# Montant Base A=0.29 + SASEMAR C=0.28 = 0.57
+ALG_T0_BASE = 0.57  # €/GT
+ALG_T0_COEF_MARCHANDS = 0.035
+ALG_T0_TOTAL_GT = 0.02  # €/GT pour navires marchands
+
+# ─── T1: Taxe du Navire ─────────────────────────────────────────────────────
+# T1 = GT/100 × Heures × Montant_Base × Coef_correcteur × Coef_utilisation × Réductions × Bonifications
+ALG_T1_BASE_B = 1.43  # Montant base (B) pour règle générale
+ALG_T1_BASE_S = 1.20  # Montant base (S) pour courte distance
+ALG_T1_COEF_CORRECTEUR = 1.00
+ALG_T1_MIN_HEURES = 3    # minimum 3h par escale
+ALG_T1_MAX_HEURES_24H = 15  # max 15h par tranche de 24h
+
+# Coefficients d'utilisation Zone I Court Séjour
+ALG_T1_COEF_UTILISATION = {
+    "Quai/Jetée sans concession": 1.00,
+    "Quai/Jetée concession avec lame d'eau": 0.60,
+    "Quai/Jetée concession sans lame d'eau": 0.70,
+    "Pointe sans concession": 0.80,
+    "Pointe concession avec lame d'eau": 0.50,
+    "Pointe concession sans lame d'eau": 0.60,
+}
+
+# Réductions par fréquence d'escale (art. 201)
+ALG_T1_REDUCTION_FREQUENCE = {
+    "1-12 escales/an": 1.00,
+    "13-26 escales/an": 0.95,
+    "27-52 escales/an": 0.85,
+    "53-104 escales/an": 0.75,
+    "105-156 escales/an": 0.65,
+    "157-312 escales/an": 0.55,
+    "313-365 escales/an": 0.45,
+    ">365 escales/an": 0.35,
+}
+# Si service régulier: réduction supplémentaire -0.05
+
+# Réductions spécifiques
+ALG_T1_REDUCTIONS_SPEC = {
+    "Ravitaillement/réparation ≤48h": 0.25,
+    "Croisière général": 0.70,
+    "Croisière port base": 0.56,
+    "Croisière >11 escales/an": 0.50,
+    "RoRo/RoPax général": 0.90,
+    "RoRo/RoPax régulier": 0.60,
+    "Carburants alternatifs": 0.50,
+    "Digue exempte zone I": 0.50,
+    "Aucune": 1.00,
+}
+
+# Bonifications
+ALG_T1_BONIFICATIONS = {
+    "Environnement": 0.95,
+    "Qualité": 0.95,
+    "Trafic baie": 0.60,
+    "Vracs liquides >1.5MT": 0.90,
+    "Plateforme logistique (conteneurs transit)": 0.40,
+    "GNL/électricité quai": 0.60,
+    "Trafic Baléares/Canaries/Ceuta/Melilla": 0.75,
+    "Aucune": 1.00,
+}
+
+def calc_alg_t1(gt, heures, coef_util=1.00, reduc_freq=1.00, reduc_spec=1.00,
+                bonif=1.00, base=None, regulier=False):
+    """Calcul Taxe Navire Algeciras - Zone I Court Séjour"""
+    if base is None:
+        base = ALG_T1_BASE_B
+    h = max(heures, ALG_T1_MIN_HEURES)
+    # Plafonner à 15h par tranche de 24h
+    if h > ALG_T1_MAX_HEURES_24H:
+        tranches_24 = math.ceil(heures / 24)
+        h = min(h, ALG_T1_MAX_HEURES_24H * tranches_24)
+    freq = reduc_freq
+    if regulier:
+        freq = max(freq - 0.05, 0.10)
+    return (gt / 100) * h * base * ALG_T1_COEF_CORRECTEUR * coef_util * freq * reduc_spec * bonif
+
+# ─── T2: Taxe Passagers ─────────────────────────────────────────────────────
+ALG_T2_BASE_P = 3.23  # Montant base passagers
+ALG_T2 = {
+    "Passager Schengen": {"coef": 0.75, "total": 2.42},
+    "Passager Non-Schengen": {"coef": 1.00, "total": 3.23},
+    "Croisière port I/F": {"coef": 1.20, "total": 3.87},
+    "Croisière transit/jour": {"coef": 0.75, "total": 2.42},
+    "Véhicule 2 roues": {"coef": 1.30, "total": 4.20},
+    "Automobile ≤5m": {"coef": 2.90, "total": 9.37},
+    "Automobile >5m": {"coef": 5.80, "total": 18.73},
+    "Bus/Transport collectif": {"coef": 15.60, "total": 50.39},
+}
+
+# ─── T3: Taxe Marchandise ───────────────────────────────────────────────────
+ALG_T3_BASE_M = 2.65  # Montant base marchandise
+ALG_T3_COEF_CORRECTEUR = 1.00
+
+# Régime simplifié (équipement = marchandise)
+ALG_T3_SIMPLIFIE = {
+    "CTN ≤20' chargé": {"coef": 10.00, "total": 26.50},
+    "CTN >20' chargé": {"coef": 15.00, "total": 39.75},
+    "Semi-remorque chargée": {"coef": 15.00, "total": 39.75},
+    "Véhicule rigide >6.1m chargé": {"coef": 15.00, "total": 39.75},
+    "Train routier chargé": {"coef": 25.00, "total": 66.25},
+    "Véhicule ≤2500kg": {"coef": 0.50, "total": 1.32},
+    "Véhicule >2500kg": {"coef": 2.00, "total": 5.30},
+    "CTN ≤20' vide": {"coef": 0.90, "total": 2.38},
+    "CTN >20' vide": {"coef": 1.80, "total": 4.77},
+    "Semi-remorque vide": {"coef": 1.80, "total": 4.77},
+    "Tracteur routier": {"coef": 0.60, "total": 1.59},
+}
+
+# Réductions transbordement T3
+ALG_T3_REDUCTIONS = {
+    "Import/Export": 1.00,
+    "Transit maritime (débarquement seul)": 1.00,
+    "Transit maritime (embarquement)": 0.00,
+    "Transbordement navires amarrés": 0.50,
+    "Transbordement navires accostés": 0.30,
+    "Terminal concession I/E": 0.50,
+    "Terminal concession transit": 0.25,
+    "Terminal concession transbordement": 0.20,
+    "Courte distance régulière": 0.80,
+    "Courte distance régulière RoRo": 0.60,
+}
+
+ALG_T3_BONIF_CTN = 0.70  # Bonification conteneurs I/E
+
+# Régime par groupes de marchandises
+ALG_T3_GROUPES = {
+    "Groupe 1 (minerais, charbon...)": {"coef": 0.16, "total_tm": 0.42},
+    "Groupe 2 (céréales, engrais...)": {"coef": 0.27, "total_tm": 0.72},
+    "Groupe 3 (produits chimiques...)": {"coef": 0.43, "total_tm": 1.14},
+    "Groupe 4 (produits manufacturés...)": {"coef": 0.72, "total_tm": 1.91},
+    "Groupe 5 (marchandise générale)": {"coef": 1.00, "total_tm": 2.65},
+}
+
+# ─── T6: Zone de Transit ────────────────────────────────────────────────────
+ALG_T6_BASE_T = 0.105  # €/m²/jour
+ALG_T6_COEF = {
+    "J1-7": {"coef": 1.00, "total": 0.105},
+    "J8-15": {"coef": 3.00, "total": 0.315},
+    "J16-30": {"coef": 6.00, "total": 0.63},
+    "J31-60": {"coef": 10.00, "total": 1.05},
+    "J61+": {"coef": 20.00, "total": 2.10},
+}
+
+def calc_alg_t6(surface_m2, jours):
+    """Calcul taxe zone transit Algeciras"""
+    total = 0
+    j_restant = jours
+    tranches = [(7, 0.105), (8, 0.315), (15, 0.63), (30, 1.05), (9999, 2.10)]
+    for duree, tarif in tranches:
+        j = min(j_restant, duree)
+        if j <= 0:
+            break
+        total += surface_m2 * tarif * j
+        j_restant -= j
+    return total
+
+# ─── Pilotage ────────────────────────────────────────────────────────────────
+# Tarif T+2 applicable 2024 (arqueo acumulado 2023 = 681.7M GT → tranche T+2)
+ALG_PILOTAGE_TARIFS = {
+    "T+2": {
+        "Entrée": {"fixe": 202.30, "variable": 0.00894},
+        "Sortie": {"fixe": 202.30, "variable": 0.00894},
+        "Mouvement intérieur": {"fixe": 275.13, "variable": 0.01217},
+    },
+    "T+1": {
+        "Entrée": {"fixe": 206.43, "variable": 0.00913},
+        "Sortie": {"fixe": 206.43, "variable": 0.00913},
+        "Mouvement intérieur": {"fixe": 280.75, "variable": 0.01244},
+    },
+    "T0": {
+        "Entrée": {"fixe": 210.65, "variable": 0.00932},
+        "Sortie": {"fixe": 210.65, "variable": 0.00932},
+        "Mouvement intérieur": {"fixe": 286.48, "variable": 0.01268},
+    },
+    "T-1": {
+        "Entrée": {"fixe": 214.86, "variable": 0.00950},
+        "Sortie": {"fixe": 214.86, "variable": 0.00950},
+        "Mouvement intérieur": {"fixe": 292.20, "variable": 0.01295},
+    },
+    "T-2": {
+        "Entrée": {"fixe": 219.15, "variable": 0.00970},
+        "Sortie": {"fixe": 219.15, "variable": 0.00970},
+        "Mouvement intérieur": {"fixe": 298.05, "variable": 0.01318},
+    },
+}
+
+# Majorations pilotage Algeciras
+ALG_PILOTAGE_MAJORATIONS = {
+    "Sans machine/gouvernail": 1.00,  # +100%
+    "2 pilotes (complexe)": 1.00,    # +100%
+    "Hors zone": 0.30,               # +30%
+    ">90 min (€/h suppl.)": 800,     # forfait €/h
+    "Varadero/dique sec": 1.00,      # double tarif
+    "Aucune": 0.00,
+}
+
+def calc_alg_pilotage(gt, mouvement="Entrée", tranche="T+2", majoration=0.0):
+    """Pilotage Algeciras = Partie fixe + Partie variable × GT"""
+    t = ALG_PILOTAGE_TARIFS[tranche][mouvement]
+    base = t["fixe"] + t["variable"] * gt
+    return base * (1 + majoration)
+
+# ─── Utilities ───────────────────────────────────────────────────────────────
+ALG_UTILITIES = {
+    "Eau locale (navires Algeciras)": 5.00,     # €/m³
+    "Eau locale (autres)": 4.00,                 # €/m³
+    "Connexion eau fixe": 55.00,                 # €/connexion
+    "Connexion eau navire": 20.00,               # €/connexion
+    "Électricité générale": 0.1778,              # €/kWh
+    "Électricité zone pêche": 0.1524,            # €/kWh
+    "Électricité haute tension": 0.0953,          # €/kWh
+    "Connexion électricité navire": 8.4538,       # €
+    "Passerelle ferry": 96.00,                   # €/opération
+    "Recharge véhicule électrique": 0.35,        # €/kWh
+}
+
+# ─── Déchets ─────────────────────────────────────────────────────────────────
+ALG_DECHETS_BASE_R1 = 80.0   # Navires cargo
+ALG_DECHETS_BASE_R1_PAX = 75.0  # Navires à passagers
+ALG_DECHETS_BASE_R2_PAX = 0.25  # €/personne (pax seulement)
+
+def calc_alg_dechets(gt, nb_pax=0):
+    """Taxe déchets navires Algeciras"""
+    if gt <= 2500:
+        coef = 1.50
+    elif gt <= 25000:
+        coef = 0.0006 * gt
+    elif gt <= 100000:
+        coef = 0.00012 * gt + 12
+    else:
+        coef = 24.00
+    if nb_pax > 0:
+        return ALG_DECHETS_BASE_R1_PAX * coef + ALG_DECHETS_BASE_R2_PAX * nb_pax
+    return ALG_DECHETS_BASE_R1 * coef
