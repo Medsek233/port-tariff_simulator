@@ -773,3 +773,93 @@ def calc_alg_dechets(gt, nb_pax=0):
     if nb_pax > 0:
         return ALG_DECHETS_BASE_R1_PAX * coef + ALG_DECHETS_BASE_R2_PAX * nb_pax
     return ALG_DECHETS_BASE_R1 * coef
+
+# ═════════════════════════════════════════════════════════════════════════════
+# PROJECTIONS NWM 2026-2035 — Annexe 7
+# ═════════════════════════════════════════════════════════════════════════════
+
+PROJ_YEARS = list(range(2026, 2036))
+
+# Trafic annuel (TEU, tonnes, unités)
+PROJ_TRAFIC = {
+    "Conteneurs TC1 (TEU)":  [450000,600000,900000,1125000,1350000,1500000,1500000,1500000,1500000,1500000],
+    "Conteneurs TC2 (TEU)":  [0,0,0,450000,525000,750000,975000,1125000,1275000,1350000],
+    "Total Conteneurs (TEU)":[450000,600000,900000,1575000,1875000,2250000,2475000,2625000,2775000,2850000],
+    "Hydrocarbures Q1 (T)":  [1600000,2666667,3733333,4800000,5333333,5333333,5333333,5333333,5333333,5333333],
+    "Hydrocarbures Q2 (T)":  [0,1600000,2666667,3733333,4800000,5333333,5333333,5333333,5333333,5333333],
+    "Hydrocarbures Q3 (T)":  [0,0,1600000,2666667,3733333,4800000,5333333,5333333,5333333,5333333],
+    "Total Hydrocarbures (T)":[1600000,4266667,8000000,11200000,13866667,15466667,16000000,16000000,16000000,16000000],
+    "Marchandises Div. (T)": [900000,1500000,2100000,2400000,2550000,2550000,2550000,2550000,2550000,2550000],
+    "Vrac Solide (T)":       [1750000,2450000,3500000,4200000,4550000,4900000,5250000,5600000,5600000,5600000],
+    "Roulier (unités)":      [0,0,40000,40000,80000,80000,80000,100000,100000,120000],
+}
+
+# Escales annuelles (nombre de navires)
+PROJ_ESCALES = {
+    "Conteneurs TC1":   [257,343,514,643,772,857,857,857,857,857],
+    "Conteneurs TC2":   [0,0,0,374,436,623,809,934,1059,1121],
+    "Hydrocarbures Q1": [60,100,139,179,199,199,199,199,199,199],
+    "Hydrocarbures Q2": [0,57,96,134,172,191,191,191,191,191],
+    "Hydrocarbures Q3": [0,0,57,96,134,172,191,191,191,191],
+    "Marchandises Div.":[63,105,147,168,179,179,179,179,179,179],
+    "Vrac Solide":      [85,119,170,204,221,238,256,273,273,273],
+    "Roulier":          [0,0,31,31,63,63,63,78,78,94],
+}
+
+# Navires de référence (source: Annexe 7)
+PROJ_NAVIRES = {
+    "Porte-conteneur": {
+        "capacite": "17,340 EVP / 200,000 TPL",
+        "loa": 399, "beam": 59, "draft": 16, "gt_est": 170000,
+        "nb_rem": 3, "sejour_h": 24, "teu_par_escale": 1750,
+    },
+    "Feeder": {
+        "capacite": "2,183 EVP / 33,100 TPL",
+        "loa": 207, "beam": 30, "draft": 11.5, "gt_est": 22000,
+        "nb_rem": 2, "sejour_h": 12, "teu_par_escale": 1200,
+    },
+    "Raffinés 1": {
+        "capacite": "124,000 TPL",
+        "loa": 265, "beam": 42, "draft": 15.5, "gt_est": 65000,
+        "nb_rem": 2, "sejour_h": 36, "tonnes_par_escale": 26667,
+    },
+    "Raffinés 2": {
+        "capacite": "40,000 TPL",
+        "loa": 183, "beam": 27, "draft": 11, "gt_est": 25000,
+        "nb_rem": 2, "sejour_h": 18, "tonnes_par_escale": 27907,
+    },
+    "Brut 1": {
+        "capacite": "170,000 TPL",
+        "loa": 290, "beam": 50, "draft": 18, "gt_est": 85000,
+        "nb_rem": 3, "sejour_h": 48, "tonnes_par_escale": 26780,
+    },
+    "Brut 2": {
+        "capacite": "70,000 TPL",
+        "loa": 239, "beam": 42, "draft": 15, "gt_est": 40000,
+        "nb_rem": 2, "sejour_h": 24, "tonnes_par_escale": 27907,
+    },
+    "RO-RO": {
+        "capacite": "42,000 TPL",
+        "loa": 265, "beam": 32, "draft": 12, "gt_est": 45000,
+        "nb_rem": 2, "sejour_h": 8, "unites_par_escale": 1280,
+    },
+    "Vrac spécialisé": {
+        "capacite": "170,000 TPL",
+        "loa": 292, "beam": 46, "draft": 18.2, "gt_est": 90000,
+        "nb_rem": 2, "sejour_h": 48, "tonnes_par_escale": 20588,
+    },
+}
+
+# Mapping escales → navire de référence
+# TC1 = mix Mother (70%) + Feeder (30%) ; TC2 = idem
+# Hydrocarbures Q1-Q3: mix Raffinés/Brut
+PROJ_MAPPING = {
+    "Conteneurs TC1":   [("Porte-conteneur", 0.70), ("Feeder", 0.30)],
+    "Conteneurs TC2":   [("Porte-conteneur", 0.70), ("Feeder", 0.30)],
+    "Hydrocarbures Q1": [("Raffinés 1", 0.50), ("Raffinés 2", 0.50)],
+    "Hydrocarbures Q2": [("Raffinés 1", 0.50), ("Raffinés 2", 0.50)],
+    "Hydrocarbures Q3": [("Brut 1", 0.50), ("Brut 2", 0.50)],
+    "Marchandises Div.":[("Vrac spécialisé", 1.0)],  # approximation
+    "Vrac Solide":      [("Vrac spécialisé", 1.0)],
+    "Roulier":          [("RO-RO", 1.0)],
+}
