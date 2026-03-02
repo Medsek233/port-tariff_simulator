@@ -963,10 +963,133 @@ with tabs[12]:
             "Les revenus TM sont calculés en parallèle pour comparaison.")
 
     # ─── PARAMETRES OPERATIONNELS ────────────────────────────────────────────
-    proj_tabs = st.tabs(["⚙️ Paramètres","📊 Revenus par Année","🔍 Détail par Catégorie","📋 Tableau Complet"])
+    proj_tabs = st.tabs(["🚢 Escales & Trafic","💲 Tarifs","📊 Revenus par Année","🔍 Détail par Catégorie","📋 Tableau Complet"])
 
+    # ═══════ TAB: ESCALES & TRAFIC ══════════════════════════════════════════
     with proj_tabs[0]:
-        st.subheader("Paramètres ajustables")
+        st.subheader("🚢 Scénario d'Escales — Année cible + Croissance")
+
+        # Target year & growth rate
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            target_year = st.selectbox("Année cible", PROJ_YEARS, index=4, key="proj_ty",
+                                        help="Saisir les escales pour cette année. Les années précédentes sont interpolées depuis 2026.")
+        with c2:
+            growth_rate = st.number_input("Croissance annuelle après cible (%)", -10.0, 30.0, 3.0, 0.5, key="proj_gr",
+                                           help="Taux composé appliqué aux années après l'année cible")
+        with c3:
+            vol_mode = st.radio("Mode volumes trafic", ["🔗 Lié aux escales", "📋 Annexe 7 (indépendant)"],
+                                 key="proj_vm", help="Lié: volumes = escales × cargo moyen/navire. Indépendant: volumes fixes Annexe 7.")
+        linked = "Lié" in vol_mode
+
+        # Escales saisie par catégorie pour l'année cible
+        st.divider()
+        ti = PROJ_YEARS.index(target_year)
+        st.subheader(f"Escales par catégorie — {target_year}")
+        st.caption("Valeurs par défaut = Annexe 7. Modifiez librement.")
+
+        ESC_CATS = list(PROJ_ESCALES.keys())
+        esc_target = {}
+
+        # Display in 2 rows of 4
+        row1 = st.columns(4)
+        row2 = st.columns(4)
+        all_cols = row1 + row2
+        for ci, cat in enumerate(ESC_CATS):
+            default_val = PROJ_ESCALES[cat][ti]
+            with all_cols[ci]:
+                esc_target[cat] = st.number_input(f"{cat}", 0, 10000, int(round(default_val)),
+                                                   10, key=f"esc_{ci}")
+
+        total_target = sum(esc_target.values())
+        total_annexe = sum(PROJ_ESCALES[cat][ti] for cat in ESC_CATS)
+        delta_pct = ((total_target / total_annexe) - 1) * 100 if total_annexe > 0 else 0
+        st.metric(f"Total escales {target_year}", f"{total_target:,}",
+                  delta=f"{delta_pct:+.1f}% vs Annexe 7 ({int(round(total_annexe)):,})")
+
+        # ── Compute escales for all years ──
+        # 2026 → target: linear interpolation between Annexe 7 2026 and user target
+        # target → 2035: compound growth from target values
+        computed_escales = {}  # {cat: [10 values]}
+        for cat in ESC_CATS:
+            vals = []
+            base_2026 = PROJ_ESCALES[cat][0]  # Annexe 7 first year
+            target_val = esc_target[cat]
+            years_to_target = target_year - 2026
+
+            for yi, year in enumerate(PROJ_YEARS):
+                if year < target_year:
+                    # Linear interpolation 2026 → target
+                    if years_to_target > 0:
+                        frac = (year - 2026) / years_to_target
+                        v = base_2026 + (target_val - base_2026) * frac
+                    else:
+                        v = target_val
+                elif year == target_year:
+                    v = target_val
+                else:
+                    # Compound growth after target
+                    years_after = year - target_year
+                    v = target_val * ((1 + growth_rate / 100) ** years_after)
+                vals.append(max(0, v))
+            computed_escales[cat] = vals
+
+        # Preview escales table
+        with st.expander("📋 Prévisualisation escales toutes années", expanded=True):
+            preview = {"Catégorie": ESC_CATS}
+            for yi, year in enumerate(PROJ_YEARS):
+                annexe_vals = [int(round(PROJ_ESCALES[cat][yi])) for cat in ESC_CATS]
+                custom_vals = [int(round(computed_escales[cat][yi])) for cat in ESC_CATS]
+                preview[f"{year} (A7)"] = annexe_vals
+                preview[f"{year} ✏️"] = custom_vals
+            df_prev = pd.DataFrame(preview)
+            st.dataframe(df_prev, use_container_width=True, hide_index=True)
+
+        # Compute volumes if linked mode
+        # Average cargo per call by category (from Annexe 7 reference)
+        AVG_CARGO_PER_CALL = {
+            "Conteneurs TC1": 1750,   # TEU/call
+            "Conteneurs TC2": 1200,   # TEU/call
+            "Hydrocarbures Q1": 26667, # T/call
+            "Hydrocarbures Q2": 27907, # T/call
+            "Hydrocarbures Q3": 26780, # T/call
+            "Marchandises Div.": 14286, # T/call
+            "Vrac Solide": 20588,      # T/call
+            "Roulier": 1280,           # unités/call
+        }
+
+        # Cargo unit labels
+        CARGO_UNITS = {
+            "Conteneurs TC1": "TEU", "Conteneurs TC2": "TEU",
+            "Hydrocarbures Q1": "T", "Hydrocarbures Q2": "T", "Hydrocarbures Q3": "T",
+            "Marchandises Div.": "T", "Vrac Solide": "T", "Roulier": "unités",
+        }
+
+        # Computed volumes (linked or Annexe 7)
+        computed_volumes = {}
+        if linked:
+            for cat in ESC_CATS:
+                avg = AVG_CARGO_PER_CALL.get(cat, 0)
+                computed_volumes[cat] = [computed_escales[cat][yi] * avg for yi in range(10)]
+        # We also need aggregate volumes for revenue calc
+        def get_vol(key, yi):
+            """Get volume for a given traffic key and year index"""
+            if linked:
+                # Map PROJ_TRAFIC keys to escale categories
+                vol_map = {
+                    "Total Conteneurs (TEU)": lambda i: computed_volumes.get("Conteneurs TC1",[0]*10)[i] + computed_volumes.get("Conteneurs TC2",[0]*10)[i],
+                    "Total Hydrocarbures (T)": lambda i: computed_volumes.get("Hydrocarbures Q1",[0]*10)[i] + computed_volumes.get("Hydrocarbures Q2",[0]*10)[i] + computed_volumes.get("Hydrocarbures Q3",[0]*10)[i],
+                    "Marchandises Div. (T)": lambda i: computed_volumes.get("Marchandises Div.",[0]*10)[i],
+                    "Vrac Solide (T)": lambda i: computed_volumes.get("Vrac Solide",[0]*10)[i],
+                    "Roulier (unités)": lambda i: computed_volumes.get("Roulier",[0]*10)[i],
+                }
+                if key in vol_map:
+                    return vol_map[key](yi)
+            return PROJ_TRAFIC[key][yi]
+
+    # ═══════ TAB: TARIFS ═══════════════════════════════════════════════════
+    with proj_tabs[1]:
+        st.subheader("💲 Tarifs Marchandises (modifiables)")
 
         # --- Split conteneurs ---
         col1, col2 = st.columns(2)
@@ -982,9 +1105,7 @@ with tabs[12]:
             hydro_op = st.selectbox("Opération hydrocarbures",
                 ["Import/Export", "Transbordement"], key="proj_hop")
 
-        # --- Tarifs modifiables ---
         st.divider()
-        st.subheader("🔧 Tarifs Marchandises (modifiables)")
         tc1, tc2, tc3, tc4 = st.columns(4)
         with tc1:
             t_ctn_ts_nwm = st.number_input("CTN Transb. NWM (€/TEU)", 0.0, 50.0, 0.55, 0.01, key="pt1")
@@ -999,25 +1120,23 @@ with tabs[12]:
             t_vrac_tm = st.number_input("Vrac TM (€/T)", 0.0, 10.0, 0.73, 0.01, key="pt7")
             t_md_tm = st.number_input("March. Div TM (€/T)", 0.0, 10.0, 0.86, 0.01, key="pt8")
 
-        # Hydrocarbures tarifs
+        # Hydrocarbures
         c1, c2 = st.columns(2)
         with c1:
-            st.caption("**NWM Hydrocarbures**")
             if "blancs" in hydro_type.lower():
-                t_hydro_nwm = HYDROCARBURES_NWM["Produits blancs (diesel, kérosène, essence, lubrifiants)"][hydro_op.replace("Transbordement","Transbordement")]
+                t_hydro_nwm = HYDROCARBURES_NWM["Produits blancs (diesel, kérosène, essence, lubrifiants)"][hydro_op]
             elif "noirs" in hydro_type.lower():
-                t_hydro_nwm = HYDROCARBURES_NWM["Produits noirs (fuel lourd, bitume)"][hydro_op.replace("Transbordement","Transbordement")]
+                t_hydro_nwm = HYDROCARBURES_NWM["Produits noirs (fuel lourd, bitume)"][hydro_op]
             else:
                 tb = HYDROCARBURES_NWM["Produits blancs (diesel, kérosène, essence, lubrifiants)"][hydro_op]
                 tn = HYDROCARBURES_NWM["Produits noirs (fuel lourd, bitume)"][hydro_op]
                 t_hydro_nwm = 0.6 * tb + 0.4 * tn
             t_hydro_nwm = st.number_input("Hydrocarbures NWM (€/T)", 0.0, 10.0, float(t_hydro_nwm), 0.01, key="pt9")
         with c2:
-            st.caption("**TM Hydrocarbures** (estimé — pas de tarif publié)")
             t_hydro_tm = st.number_input("Hydrocarbures TM (€/T)", 0.0, 10.0, float(t_hydro_nwm * 1.10), 0.01, key="pt10",
                                          help="Estimation +10% vs NWM par défaut")
 
-        # Roulier tarifs
+        # Roulier
         c1, c2 = st.columns(2)
         with c1:
             t_roul_nwm = st.number_input("Roulier NWM (€/unité)", 0.0, 500.0,
@@ -1028,11 +1147,9 @@ with tabs[12]:
                            MARCHANDISES_ROULIER_TM["1.1 Remorque/ensemble routier plein"]["Export"]) / 2
             t_roul_tm = st.number_input("Roulier TM (€/unité)", 0.0, 500.0, float(avg_roul_tm), 1.0, key="pt12")
 
-        # --- Navires modifiables ---
+        # Navires
         st.divider()
-        st.subheader("🚢 Paramètres Navires (modifiables)")
-        st.caption("GT estimé, nombre de remorqueurs et durée de séjour par type de navire")
-
+        st.subheader("🚢 Paramètres Navires")
         nav_overrides = {}
         nav_cols = st.columns(4)
         for i, (ntype, ndata) in enumerate(PROJ_NAVIRES.items()):
@@ -1133,8 +1250,8 @@ with tabs[12]:
         rev_tm = {"year": year, "droits_port": 0, "pilotage": 0, "remorquage": 0, "lamanage": 0,
                    "ctn": 0, "hydro": 0, "md": 0, "vrac": 0, "roulier": 0, "escales": 0}
 
-        for cat, escales_list in PROJ_ESCALES.items():
-            nb_esc = escales_list[yi]
+        for cat in ESC_CATS:
+            nb_esc = computed_escales[cat][yi]
             if nb_esc <= 0:
                 continue
             rev_nwm["escales"] += nb_esc
@@ -1160,28 +1277,28 @@ with tabs[12]:
                     rev_nwm[k] += c_nwm[k] * esc_part
                     rev_tm[k] += c_tm[k] * esc_part
 
-        # Cargo revenue - Conteneurs
-        teu_total = PROJ_TRAFIC["Total Conteneurs (TEU)"][yi]
+        # Cargo revenue - Conteneurs (uses get_vol for linked/independent mode)
+        teu_total = get_vol("Total Conteneurs (TEU)", yi)
         rev_nwm["ctn"] = teu_total * (pct_ts/100 * t_ctn_ts_nwm + pct_ie/100 * t_ctn_ie_nwm)
         rev_tm["ctn"] = teu_total * (pct_ts/100 * t_ctn_ts_tm + pct_ie/100 * t_ctn_ie_tm)
 
         # Cargo revenue - Hydrocarbures
-        hydro_total = PROJ_TRAFIC["Total Hydrocarbures (T)"][yi]
+        hydro_total = get_vol("Total Hydrocarbures (T)", yi)
         rev_nwm["hydro"] = hydro_total * t_hydro_nwm
         rev_tm["hydro"] = hydro_total * t_hydro_tm
 
         # Cargo revenue - Marchandises Diverses
-        md_total = PROJ_TRAFIC["Marchandises Div. (T)"][yi]
+        md_total = get_vol("Marchandises Div. (T)", yi)
         rev_nwm["md"] = md_total * t_md_nwm
         rev_tm["md"] = md_total * t_md_tm
 
         # Cargo revenue - Vrac Solide
-        vrac_total = PROJ_TRAFIC["Vrac Solide (T)"][yi]
+        vrac_total = get_vol("Vrac Solide (T)", yi)
         rev_nwm["vrac"] = vrac_total * t_vrac_nwm
         rev_tm["vrac"] = vrac_total * t_vrac_tm
 
         # Cargo revenue - Roulier
-        roul_total = PROJ_TRAFIC["Roulier (unités)"][yi]
+        roul_total = get_vol("Roulier (unités)", yi)
         rev_nwm["roulier"] = roul_total * t_roul_nwm
         rev_tm["roulier"] = roul_total * t_roul_tm
 
@@ -1201,8 +1318,24 @@ with tabs[12]:
     df_tm = pd.DataFrame(results_tm)
 
     # ─── TAB: REVENUS PAR ANNEE ─────────────────────────────────────────────
-    with proj_tabs[1]:
+    with proj_tabs[2]:
         st.subheader("Revenus Annuels Projetés")
+
+        # Mode indicator
+        mode_txt = "🔗 Volumes liés aux escales" if linked else "📋 Volumes Annexe 7 (fixes)"
+        st.caption(f"**Mode:** {mode_txt} | **Cible:** {target_year} | **Croissance:** {growth_rate:+.1f}%/an")
+
+        # Escale comparison chart (Annexe 7 vs Custom)
+        with st.expander("📊 Escales: Annexe 7 vs Scénario personnalisé", expanded=False):
+            fig_esc = go.Figure()
+            a7_totals = [sum(PROJ_ESCALES[cat][yi] for cat in ESC_CATS) for yi in range(10)]
+            custom_totals = [sum(computed_escales[cat][yi] for cat in ESC_CATS) for yi in range(10)]
+            fig_esc.add_trace(go.Scatter(x=[str(y) for y in PROJ_YEARS], y=a7_totals,
+                                          name="Annexe 7", line=dict(color="#95A5A6", dash="dash", width=2)))
+            fig_esc.add_trace(go.Scatter(x=[str(y) for y in PROJ_YEARS], y=custom_totals,
+                                          name="Scénario ✏️", line=dict(color=NWM_C, width=3), fill="tozeroy"))
+            fig_esc.update_layout(height=300, yaxis_title="Total escales/an")
+            st.plotly_chart(fig_esc, use_container_width=True)
 
         # KPI cards for key years
         key_years = [0, 2, 4, 7, 9]  # 2026, 2028, 2030, 2033, 2035
@@ -1261,7 +1394,7 @@ with tabs[12]:
         st.dataframe(pd.DataFrame(eco_data), use_container_width=True, hide_index=True)
 
     # ─── TAB: DETAIL PAR CATEGORIE ──────────────────────────────────────────
-    with proj_tabs[2]:
+    with proj_tabs[3]:
         st.subheader("Détail par catégorie de revenu")
 
         cat_sel = st.selectbox("Catégorie", categories, key="proj_cat")
@@ -1293,21 +1426,29 @@ with tabs[12]:
 
         # Trafic volumes chart
         st.divider()
-        st.subheader("📦 Volumes de trafic projetés (Annexe 7)")
-        traf_sel = st.multiselect("Trafics", list(PROJ_TRAFIC.keys()),
+        vol_label = "📦 Volumes de trafic (calculés depuis escales)" if linked else "📦 Volumes de trafic (Annexe 7)"
+        st.subheader(vol_label)
+        traf_keys = ["Total Conteneurs (TEU)", "Total Hydrocarbures (T)", "Marchandises Div. (T)", "Vrac Solide (T)", "Roulier (unités)"]
+        traf_sel = st.multiselect("Trafics", traf_keys,
                                    default=["Total Conteneurs (TEU)", "Total Hydrocarbures (T)", "Vrac Solide (T)"],
                                    key="proj_traf")
         if traf_sel:
             fig_traf = go.Figure()
             for ts in traf_sel:
-                vals = PROJ_TRAFIC[ts]
+                vals = [get_vol(ts, yi) for yi in range(10)]
                 fig_traf.add_trace(go.Scatter(x=[str(y) for y in PROJ_YEARS], y=vals,
                                               name=ts, mode="lines+markers"))
+                if linked:
+                    # Also show Annexe 7 as dashed reference
+                    a7_vals = PROJ_TRAFIC[ts]
+                    fig_traf.add_trace(go.Scatter(x=[str(y) for y in PROJ_YEARS], y=a7_vals,
+                                                  name=f"{ts} (A7)", mode="lines",
+                                                  line=dict(dash="dot", width=1), opacity=0.5))
             fig_traf.update_layout(height=400, yaxis_title="Volume")
             st.plotly_chart(fig_traf, use_container_width=True)
 
     # ─── TAB: TABLEAU COMPLET ────────────────────────────────────────────────
-    with proj_tabs[3]:
+    with proj_tabs[4]:
         st.subheader("Tableau Complet — NWM")
 
         full_data = []
