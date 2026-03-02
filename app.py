@@ -89,7 +89,7 @@ st.caption("**Tanger Med** vs **Nador West Med** vs **Algeciras** — Tous les �
 tabs = st.tabs(["🏗️ Droits Port","🧭 Pilotage","⚓ Remorquage","🪢 Lamanage",
                 "📦 Conteneurs","🚛 Marchandises Div.","🛢️ Hydrocarbures",
                 "🚗 Roulier","📊 Stockage","🔧 Services & Divers",
-                "🇪🇸 Algeciras","💰 Coût Total 3 Ports"])
+                "🇪🇸 Algeciras","💰 Coût Total 3 Ports","📈 Projections NWM"])
 
 # ═════════════════════════════════════════════════════════════════════════════
 # TAB 0 — DROITS DE PORT SUR NAVIRES
@@ -952,6 +952,414 @@ with tabs[11]:
         fig.add_trace(go.Scatter(x=evps, y=s_alg, name="Algeciras", line=dict(color=ALG_C, width=3, dash="dot")))
         fig.update_layout(xaxis_title="EVP", yaxis_title="Coût total escale (€)", height=420)
         st.plotly_chart(fig, use_container_width=True)
+
+# ═════════════════════════════════════════════════════════════════════════════
+# TAB 12 — PROJECTIONS REVENUS NWM 2026-2035
+# ═════════════════════════════════════════════════════════════════════════════
+with tabs[12]:
+    st.header("📈 Projections de Revenus — Nador West Med 2026-2035")
+    st.info("Basé sur l'Annexe 7 (Projections de trafic et types de navires). "
+            "Les revenus NWM sont calculés avec les tarifs du cahier tarifaire NWM 2025. "
+            "Les revenus TM sont calculés en parallèle pour comparaison.")
+
+    # ─── PARAMETRES OPERATIONNELS ────────────────────────────────────────────
+    proj_tabs = st.tabs(["⚙️ Paramètres","📊 Revenus par Année","🔍 Détail par Catégorie","📋 Tableau Complet"])
+
+    with proj_tabs[0]:
+        st.subheader("Paramètres ajustables")
+
+        # --- Split conteneurs ---
+        col1, col2 = st.columns(2)
+        with col1:
+            pct_ts = st.slider("% Transshipment conteneurs", 0, 100, 70, 5, key="proj_ts",
+                                help="Le reste = Import/Export")
+            pct_ie = 100 - pct_ts
+            st.caption(f"Transshipment: {pct_ts}% | Import/Export: {pct_ie}%")
+        with col2:
+            hydro_type = st.selectbox("Type hydrocarbures dominant",
+                ["Produits blancs (raffinés)", "Produits noirs (brut)", "Mix 60% blancs / 40% noirs"],
+                index=2, key="proj_ht")
+            hydro_op = st.selectbox("Opération hydrocarbures",
+                ["Import/Export", "Transbordement"], key="proj_hop")
+
+        # --- Tarifs modifiables ---
+        st.divider()
+        st.subheader("🔧 Tarifs Marchandises (modifiables)")
+        tc1, tc2, tc3, tc4 = st.columns(4)
+        with tc1:
+            t_ctn_ts_nwm = st.number_input("CTN Transb. NWM (€/TEU)", 0.0, 50.0, 0.55, 0.01, key="pt1")
+            t_ctn_ie_nwm = st.number_input("CTN I/E NWM (€/TEU)", 0.0, 100.0, 38.25, 0.25, key="pt2")
+        with tc2:
+            t_ctn_ts_tm = st.number_input("CTN Transb. TM (€/TEU)", 0.0, 50.0, 0.583, 0.01, key="pt3")
+            t_ctn_ie_tm = st.number_input("CTN I/E TM (€/TEU)", 0.0, 100.0, 38.63, 0.25, key="pt4")
+        with tc3:
+            t_vrac_nwm = st.number_input("Vrac NWM (€/T)", 0.0, 10.0, 1.23, 0.01, key="pt5")
+            t_md_nwm = st.number_input("March. Div NWM (€/T)", 0.0, 10.0, 0.82, 0.01, key="pt6")
+        with tc4:
+            t_vrac_tm = st.number_input("Vrac TM (€/T)", 0.0, 10.0, 0.73, 0.01, key="pt7")
+            t_md_tm = st.number_input("March. Div TM (€/T)", 0.0, 10.0, 0.86, 0.01, key="pt8")
+
+        # Hydrocarbures tarifs
+        c1, c2 = st.columns(2)
+        with c1:
+            st.caption("**NWM Hydrocarbures**")
+            if "blancs" in hydro_type.lower():
+                t_hydro_nwm = HYDROCARBURES_NWM["Produits blancs (diesel, kérosène, essence, lubrifiants)"][hydro_op.replace("Transbordement","Transbordement")]
+            elif "noirs" in hydro_type.lower():
+                t_hydro_nwm = HYDROCARBURES_NWM["Produits noirs (fuel lourd, bitume)"][hydro_op.replace("Transbordement","Transbordement")]
+            else:
+                tb = HYDROCARBURES_NWM["Produits blancs (diesel, kérosène, essence, lubrifiants)"][hydro_op]
+                tn = HYDROCARBURES_NWM["Produits noirs (fuel lourd, bitume)"][hydro_op]
+                t_hydro_nwm = 0.6 * tb + 0.4 * tn
+            t_hydro_nwm = st.number_input("Hydrocarbures NWM (€/T)", 0.0, 10.0, float(t_hydro_nwm), 0.01, key="pt9")
+        with c2:
+            st.caption("**TM Hydrocarbures** (estimé — pas de tarif publié)")
+            t_hydro_tm = st.number_input("Hydrocarbures TM (€/T)", 0.0, 10.0, float(t_hydro_nwm * 1.10), 0.01, key="pt10",
+                                         help="Estimation +10% vs NWM par défaut")
+
+        # Roulier tarifs
+        c1, c2 = st.columns(2)
+        with c1:
+            t_roul_nwm = st.number_input("Roulier NWM (€/unité)", 0.0, 500.0,
+                                          float(MARCHANDISES_ROULIER_NWM_DH["Remorques pleines"] / TAUX_DH_EUR_DEFAULT),
+                                          1.0, key="pt11")
+        with c2:
+            avg_roul_tm = (MARCHANDISES_ROULIER_TM["1.1 Remorque/ensemble routier plein"]["Import"] +
+                           MARCHANDISES_ROULIER_TM["1.1 Remorque/ensemble routier plein"]["Export"]) / 2
+            t_roul_tm = st.number_input("Roulier TM (€/unité)", 0.0, 500.0, float(avg_roul_tm), 1.0, key="pt12")
+
+        # --- Navires modifiables ---
+        st.divider()
+        st.subheader("🚢 Paramètres Navires (modifiables)")
+        st.caption("GT estimé, nombre de remorqueurs et durée de séjour par type de navire")
+
+        nav_overrides = {}
+        nav_cols = st.columns(4)
+        for i, (ntype, ndata) in enumerate(PROJ_NAVIRES.items()):
+            with nav_cols[i % 4]:
+                with st.expander(f"**{ntype}**", expanded=False):
+                    gt_o = st.number_input("GT", 1000, 300000, ndata["gt_est"], 1000, key=f"nav_gt_{i}")
+                    rem_o = st.number_input("Remorqueurs", 0, 6, ndata["nb_rem"], 1, key=f"nav_rem_{i}")
+                    sej_o = st.number_input("Séjour (h)", 1.0, 120.0, float(ndata["sejour_h"]), 1.0, key=f"nav_sej_{i}")
+                    nav_overrides[ntype] = {"gt": gt_o, "nb_rem": rem_o, "sejour_h": sej_o,
+                                            "loa": ndata["loa"], "beam": ndata["beam"], "draft": ndata["draft"]}
+
+    # ─── MOTEUR DE CALCUL ────────────────────────────────────────────────────
+    def calc_revenue_per_call(nav, port="NWM"):
+        """Calcul revenu par escale pour un type de navire"""
+        gt = nav["gt"]
+        vg_n = calc_vg(nav["loa"], nav["beam"], nav["draft"])
+        nb_r = nav["nb_rem"]
+        sej = nav["sejour_h"]
+
+        if port == "NWM":
+            # Déterminer terminal NWM
+            term = "Terminal à Conteneurs"  # default
+            r = DROITS_PORT_NAVIRES_NWM[term]
+            dp = vg_n * r["nautique"] + vg_n * r["port"] + calc_stationnement(vg_n, r["stationnement"], sej)
+            pil = calc_pilotage_nwm_entree_sortie(gt) * 2
+            rem = calc_remorquage(gt, REMORQUAGE_NWM, REMORQUAGE_NWM_SUP) * nb_r * 2
+            lam = calc_lamanage_nwm(gt)
+        else:  # TM
+            term = "Terminaux à Conteneurs (TC1-TC4)"
+            r = DROITS_PORT_NAVIRES_TM[term]
+            dp = vg_n * r["nautique"] + vg_n * r["port"] + calc_stationnement(vg_n, r["stationnement"], sej)
+            pil = calc_pilotage_tm(vg_n, "Entrée") + calc_pilotage_tm(vg_n, "Sortie")
+            rem = calc_remorquage(gt, REMORQUAGE_TM, REMORQUAGE_TM_SUP) * nb_r * 2
+            ll = LAMANAGE_TM["Cat B&C – Autres navires"]
+            lam = max(nav["loa"] * ll["tarif_ml"], ll["min"])
+
+        return {"droits_port": dp, "pilotage": pil, "remorquage": rem, "lamanage": lam}
+
+    def calc_revenue_per_call_hydro(nav, port="NWM"):
+        """Idem pour terminal hydrocarbures"""
+        gt = nav["gt"]
+        vg_n = calc_vg(nav["loa"], nav["beam"], nav["draft"])
+        nb_r = nav["nb_rem"]
+        sej = nav["sejour_h"]
+
+        if port == "NWM":
+            r = DROITS_PORT_NAVIRES_NWM["Terminal Hydrocarbures"]
+            dp = vg_n * r["nautique"] + vg_n * r["port"] + calc_stationnement(vg_n, r["stationnement"], sej)
+            pil = calc_pilotage_nwm_entree_sortie(gt) * 2
+            rem = calc_remorquage(gt, REMORQUAGE_NWM, REMORQUAGE_NWM_SUP) * nb_r * 2
+            lam = calc_lamanage_nwm(gt)
+        else:
+            r = DROITS_PORT_NAVIRES_TM["Terminal Hydrocarbures"]
+            dp = vg_n * r["nautique"] + vg_n * r["port"] + calc_stationnement(vg_n, r["stationnement"], sej)
+            pil = calc_pilotage_tm(vg_n, "Entrée") + calc_pilotage_tm(vg_n, "Sortie")
+            rem = calc_remorquage(gt, REMORQUAGE_TM, REMORQUAGE_TM_SUP) * nb_r * 2
+            ll = LAMANAGE_TM["Cat B&C – Autres navires"]
+            lam = max(nav["loa"] * ll["tarif_ml"], ll["min"])
+        return {"droits_port": dp, "pilotage": pil, "remorquage": rem, "lamanage": lam}
+
+    def calc_revenue_per_call_md(nav, port="NWM"):
+        """Idem pour terminal marchandises diverses / vrac"""
+        gt = nav["gt"]
+        vg_n = calc_vg(nav["loa"], nav["beam"], nav["draft"])
+        nb_r = nav["nb_rem"]
+        sej = nav["sejour_h"]
+
+        if port == "NWM":
+            r = DROITS_PORT_NAVIRES_NWM["Terminal Marchandises Div"]
+            dp = vg_n * r["nautique"] + vg_n * r["port"] + calc_stationnement(vg_n, r["stationnement"], sej)
+            pil = calc_pilotage_nwm_entree_sortie(gt) * 2
+            rem = calc_remorquage(gt, REMORQUAGE_NWM, REMORQUAGE_NWM_SUP) * nb_r * 2
+            lam = calc_lamanage_nwm(gt)
+        else:
+            r = DROITS_PORT_NAVIRES_TM["Terminal Vrac & MD"]
+            dp = vg_n * r["nautique"] + vg_n * r["port"] + calc_stationnement(vg_n, r["stationnement"], sej)
+            pil = calc_pilotage_tm(vg_n, "Entrée") + calc_pilotage_tm(vg_n, "Sortie")
+            rem = calc_remorquage(gt, REMORQUAGE_TM, REMORQUAGE_TM_SUP) * nb_r * 2
+            ll = LAMANAGE_TM["Cat B&C – Autres navires"]
+            lam = max(nav["loa"] * ll["tarif_ml"], ll["min"])
+        return {"droits_port": dp, "pilotage": pil, "remorquage": rem, "lamanage": lam}
+
+    # ─── CALCUL ANNUEL ───────────────────────────────────────────────────────
+    # Use overrides if available, otherwise defaults
+    def get_nav(ntype):
+        if ntype in nav_overrides:
+            return nav_overrides[ntype]
+        d = PROJ_NAVIRES[ntype]
+        return {"gt": d["gt_est"], "nb_rem": d["nb_rem"], "sejour_h": d["sejour_h"],
+                "loa": d["loa"], "beam": d["beam"], "draft": d["draft"]}
+
+    results_nwm = []
+    results_tm = []
+
+    for yi, year in enumerate(PROJ_YEARS):
+        rev_nwm = {"year": year, "droits_port": 0, "pilotage": 0, "remorquage": 0, "lamanage": 0,
+                    "ctn": 0, "hydro": 0, "md": 0, "vrac": 0, "roulier": 0, "escales": 0}
+        rev_tm = {"year": year, "droits_port": 0, "pilotage": 0, "remorquage": 0, "lamanage": 0,
+                   "ctn": 0, "hydro": 0, "md": 0, "vrac": 0, "roulier": 0, "escales": 0}
+
+        for cat, escales_list in PROJ_ESCALES.items():
+            nb_esc = escales_list[yi]
+            if nb_esc <= 0:
+                continue
+            rev_nwm["escales"] += nb_esc
+            rev_tm["escales"] += nb_esc
+
+            mapping = PROJ_MAPPING[cat]
+            for ntype, pct_nav in mapping:
+                nav = get_nav(ntype)
+                esc_part = nb_esc * pct_nav
+
+                # Choose calc function based on category
+                if "Hydro" in cat:
+                    c_nwm = calc_revenue_per_call_hydro(nav, "NWM")
+                    c_tm = calc_revenue_per_call_hydro(nav, "TM")
+                elif "Conteneur" in cat:
+                    c_nwm = calc_revenue_per_call(nav, "NWM")
+                    c_tm = calc_revenue_per_call(nav, "TM")
+                else:
+                    c_nwm = calc_revenue_per_call_md(nav, "NWM")
+                    c_tm = calc_revenue_per_call_md(nav, "TM")
+
+                for k in ["droits_port", "pilotage", "remorquage", "lamanage"]:
+                    rev_nwm[k] += c_nwm[k] * esc_part
+                    rev_tm[k] += c_tm[k] * esc_part
+
+        # Cargo revenue - Conteneurs
+        teu_total = PROJ_TRAFIC["Total Conteneurs (TEU)"][yi]
+        rev_nwm["ctn"] = teu_total * (pct_ts/100 * t_ctn_ts_nwm + pct_ie/100 * t_ctn_ie_nwm)
+        rev_tm["ctn"] = teu_total * (pct_ts/100 * t_ctn_ts_tm + pct_ie/100 * t_ctn_ie_tm)
+
+        # Cargo revenue - Hydrocarbures
+        hydro_total = PROJ_TRAFIC["Total Hydrocarbures (T)"][yi]
+        rev_nwm["hydro"] = hydro_total * t_hydro_nwm
+        rev_tm["hydro"] = hydro_total * t_hydro_tm
+
+        # Cargo revenue - Marchandises Diverses
+        md_total = PROJ_TRAFIC["Marchandises Div. (T)"][yi]
+        rev_nwm["md"] = md_total * t_md_nwm
+        rev_tm["md"] = md_total * t_md_tm
+
+        # Cargo revenue - Vrac Solide
+        vrac_total = PROJ_TRAFIC["Vrac Solide (T)"][yi]
+        rev_nwm["vrac"] = vrac_total * t_vrac_nwm
+        rev_tm["vrac"] = vrac_total * t_vrac_tm
+
+        # Cargo revenue - Roulier
+        roul_total = PROJ_TRAFIC["Roulier (unités)"][yi]
+        rev_nwm["roulier"] = roul_total * t_roul_nwm
+        rev_tm["roulier"] = roul_total * t_roul_tm
+
+        # Totals
+        rev_nwm["navire_total"] = rev_nwm["droits_port"] + rev_nwm["pilotage"] + rev_nwm["remorquage"] + rev_nwm["lamanage"]
+        rev_nwm["cargo_total"] = rev_nwm["ctn"] + rev_nwm["hydro"] + rev_nwm["md"] + rev_nwm["vrac"] + rev_nwm["roulier"]
+        rev_nwm["total"] = rev_nwm["navire_total"] + rev_nwm["cargo_total"]
+
+        rev_tm["navire_total"] = rev_tm["droits_port"] + rev_tm["pilotage"] + rev_tm["remorquage"] + rev_tm["lamanage"]
+        rev_tm["cargo_total"] = rev_tm["ctn"] + rev_tm["hydro"] + rev_tm["md"] + rev_tm["vrac"] + rev_tm["roulier"]
+        rev_tm["total"] = rev_tm["navire_total"] + rev_tm["cargo_total"]
+
+        results_nwm.append(rev_nwm)
+        results_tm.append(rev_tm)
+
+    df_nwm = pd.DataFrame(results_nwm)
+    df_tm = pd.DataFrame(results_tm)
+
+    # ─── TAB: REVENUS PAR ANNEE ─────────────────────────────────────────────
+    with proj_tabs[1]:
+        st.subheader("Revenus Annuels Projetés")
+
+        # KPI cards for key years
+        key_years = [0, 2, 4, 7, 9]  # 2026, 2028, 2030, 2033, 2035
+        cols = st.columns(len(key_years))
+        for i, ki in enumerate(key_years):
+            with cols[i]:
+                y = PROJ_YEARS[ki]
+                tn = results_nwm[ki]["total"]
+                st.metric(f"NWM {y}", f"{tn/1e6:,.1f} M€",
+                          delta=f"{results_nwm[ki]['escales']:.0f} escales")
+
+        # Stacked bar chart — NWM
+        st.divider()
+        st.subheader("🔴 NWM — Revenus par catégorie")
+        categories = ["Droits Port", "Pilotage", "Remorquage", "Lamanage",
+                       "Conteneurs", "Hydrocarbures", "March. Div.", "Vrac", "Roulier"]
+        cat_keys = ["droits_port", "pilotage", "remorquage", "lamanage",
+                     "ctn", "hydro", "md", "vrac", "roulier"]
+        colors_proj = ["#2980B9","#27AE60","#F39C12","#8E44AD","#E74C3C","#1ABC9C","#D35400","#2C3E50","#3498DB"]
+
+        fig_nwm = go.Figure()
+        for ci, (cat_name, cat_key) in enumerate(zip(categories, cat_keys)):
+            vals = [r[cat_key]/1e6 for r in results_nwm]
+            fig_nwm.add_trace(go.Bar(name=cat_name, x=[str(y) for y in PROJ_YEARS], y=vals,
+                                      marker_color=colors_proj[ci]))
+        fig_nwm.update_layout(barmode="stack", height=500, yaxis_title="Revenus (M€)",
+                              legend=dict(orientation="h", y=1.15))
+        st.plotly_chart(fig_nwm, use_container_width=True)
+
+        # Comparison NWM vs TM totals
+        st.divider()
+        st.subheader("Comparaison NWM vs TM — Revenu Total")
+        fig_comp = go.Figure()
+        fig_comp.add_trace(go.Scatter(x=[str(y) for y in PROJ_YEARS],
+                                       y=[r["total"]/1e6 for r in results_nwm],
+                                       name="NWM", line=dict(color=NWM_C, width=3), fill="tozeroy"))
+        fig_comp.add_trace(go.Scatter(x=[str(y) for y in PROJ_YEARS],
+                                       y=[r["total"]/1e6 for r in results_tm],
+                                       name="TM (mêmes volumes)", line=dict(color=TM_C, width=3, dash="dash")))
+        fig_comp.update_layout(height=400, yaxis_title="Revenu total annuel (M€)",
+                               legend=dict(orientation="h", y=1.1))
+        st.plotly_chart(fig_comp, use_container_width=True)
+
+        # Revenue comparison table
+        eco_data = []
+        for yi in range(len(PROJ_YEARS)):
+            tn = results_nwm[yi]["total"]
+            tt = results_tm[yi]["total"]
+            eco_data.append({
+                "Année": PROJ_YEARS[yi],
+                "NWM Total (M€)": f"{tn/1e6:,.2f}",
+                "TM Total (M€)": f"{tt/1e6:,.2f}",
+                "Δ NWM vs TM": f"{(tn/tt-1)*100:+.1f}%" if tt > 0 else "—",
+                "Escales": f"{results_nwm[yi]['escales']:.0f}",
+            })
+        st.dataframe(pd.DataFrame(eco_data), use_container_width=True, hide_index=True)
+
+    # ─── TAB: DETAIL PAR CATEGORIE ──────────────────────────────────────────
+    with proj_tabs[2]:
+        st.subheader("Détail par catégorie de revenu")
+
+        cat_sel = st.selectbox("Catégorie", categories, key="proj_cat")
+        cat_key_sel = cat_keys[categories.index(cat_sel)]
+
+        fig_detail = go.Figure()
+        fig_detail.add_trace(go.Bar(x=[str(y) for y in PROJ_YEARS],
+                                     y=[r[cat_key_sel]/1e6 for r in results_nwm],
+                                     name=f"NWM - {cat_sel}", marker_color=NWM_C))
+        fig_detail.add_trace(go.Bar(x=[str(y) for y in PROJ_YEARS],
+                                     y=[r[cat_key_sel]/1e6 for r in results_tm],
+                                     name=f"TM - {cat_sel}", marker_color=TM_C))
+        fig_detail.update_layout(barmode="group", height=420, yaxis_title="Revenus (M€)")
+        st.plotly_chart(fig_detail, use_container_width=True)
+
+        # Split navire vs cargo
+        st.divider()
+        st.subheader("Répartition Navire vs Cargo")
+        fig_split = go.Figure()
+        fig_split.add_trace(go.Bar(x=[str(y) for y in PROJ_YEARS],
+                                    y=[r["navire_total"]/1e6 for r in results_nwm],
+                                    name="Services Navire (droits+pilotage+rem+lam)", marker_color="#2C3E50"))
+        fig_split.add_trace(go.Bar(x=[str(y) for y in PROJ_YEARS],
+                                    y=[r["cargo_total"]/1e6 for r in results_nwm],
+                                    name="Droits Marchandises (ctn+hydro+md+vrac+roul)", marker_color="#E74C3C"))
+        fig_split.update_layout(barmode="stack", height=420, yaxis_title="NWM Revenus (M€)",
+                                legend=dict(orientation="h", y=1.1))
+        st.plotly_chart(fig_split, use_container_width=True)
+
+        # Trafic volumes chart
+        st.divider()
+        st.subheader("📦 Volumes de trafic projetés (Annexe 7)")
+        traf_sel = st.multiselect("Trafics", list(PROJ_TRAFIC.keys()),
+                                   default=["Total Conteneurs (TEU)", "Total Hydrocarbures (T)", "Vrac Solide (T)"],
+                                   key="proj_traf")
+        if traf_sel:
+            fig_traf = go.Figure()
+            for ts in traf_sel:
+                vals = PROJ_TRAFIC[ts]
+                fig_traf.add_trace(go.Scatter(x=[str(y) for y in PROJ_YEARS], y=vals,
+                                              name=ts, mode="lines+markers"))
+            fig_traf.update_layout(height=400, yaxis_title="Volume")
+            st.plotly_chart(fig_traf, use_container_width=True)
+
+    # ─── TAB: TABLEAU COMPLET ────────────────────────────────────────────────
+    with proj_tabs[3]:
+        st.subheader("Tableau Complet — NWM")
+
+        full_data = []
+        for r in results_nwm:
+            full_data.append({
+                "Année": r["year"],
+                "Escales": f"{r['escales']:.0f}",
+                "Droits Port": f"{r['droits_port']/1e6:.2f}",
+                "Pilotage": f"{r['pilotage']/1e6:.2f}",
+                "Remorquage": f"{r['remorquage']/1e6:.2f}",
+                "Lamanage": f"{r['lamanage']/1e6:.2f}",
+                "σ Navire": f"{r['navire_total']/1e6:.2f}",
+                "Conteneurs": f"{r['ctn']/1e6:.2f}",
+                "Hydrocarbures": f"{r['hydro']/1e6:.2f}",
+                "March. Div.": f"{r['md']/1e6:.2f}",
+                "Vrac": f"{r['vrac']/1e6:.2f}",
+                "Roulier": f"{r['roulier']/1e6:.2f}",
+                "σ Cargo": f"{r['cargo_total']/1e6:.2f}",
+                "🔴 TOTAL (M€)": f"{r['total']/1e6:.2f}",
+            })
+        st.dataframe(pd.DataFrame(full_data), use_container_width=True, hide_index=True)
+
+        st.divider()
+        st.subheader("Tableau Complet — TM (mêmes volumes)")
+        full_tm = []
+        for r in results_tm:
+            full_tm.append({
+                "Année": r["year"],
+                "Escales": f"{r['escales']:.0f}",
+                "Droits Port": f"{r['droits_port']/1e6:.2f}",
+                "Pilotage": f"{r['pilotage']/1e6:.2f}",
+                "Remorquage": f"{r['remorquage']/1e6:.2f}",
+                "Lamanage": f"{r['lamanage']/1e6:.2f}",
+                "σ Navire": f"{r['navire_total']/1e6:.2f}",
+                "Conteneurs": f"{r['ctn']/1e6:.2f}",
+                "Hydrocarbures": f"{r['hydro']/1e6:.2f}",
+                "March. Div.": f"{r['md']/1e6:.2f}",
+                "Vrac": f"{r['vrac']/1e6:.2f}",
+                "Roulier": f"{r['roulier']/1e6:.2f}",
+                "σ Cargo": f"{r['cargo_total']/1e6:.2f}",
+                "🔵 TOTAL (M€)": f"{r['total']/1e6:.2f}",
+            })
+        st.dataframe(pd.DataFrame(full_tm), use_container_width=True, hide_index=True)
+
+        # Cumulé 2026-2035
+        st.divider()
+        cum_nwm = sum(r["total"] for r in results_nwm)
+        cum_tm = sum(r["total"] for r in results_tm)
+        c1, c2, c3 = st.columns(3)
+        c1.metric("🔴 NWM Cumulé 2026-2035", f"{cum_nwm/1e6:,.1f} M€")
+        c2.metric("🔵 TM Cumulé 2026-2035", f"{cum_tm/1e6:,.1f} M€")
+        c3.metric("Δ NWM vs TM", f"{(cum_nwm-cum_tm)/1e6:+,.1f} M€ ({(cum_nwm/cum_tm-1)*100:+.1f}%)")
 
 # ─── FOOTER ──────────────────────────────────────────────────────────────────
 st.divider()
