@@ -21,6 +21,7 @@ import pandas as pd
 import streamlit as st
 
 import billing
+import storage
 import tarifs_data as td
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -69,26 +70,32 @@ def _seed_vessels() -> list[dict]:
     ]
 
 
+_DEFAULT_COMPANY = {
+    "name": "Nador West Med — Autorité Portuaire",
+    "address": "Port de Nador West Med, Betoya, Maroc",
+    "ice": "0027 5896 000 084", "if": "5289 3410",
+    "footer": "Règlement à 30 jours par virement bancaire. Zone Franche — "
+              "montants exonérés de TVA.",
+}
+
+
 def init_state():
+    """Charge l'état persisté (SQLite) une fois par session ; sème les valeurs par
+    défaut et initialise la base si celle-ci est vide."""
     ss = st.session_state
-    if "vessels" not in ss:
-        ss.vessels = _seed_vessels()
-    if "catalog" not in ss:
-        ss.catalog = billing.default_catalog()
-    if "calls" not in ss:
-        ss.calls = []
-    if "invoices" not in ss:
-        ss.invoices = []
-    if "inv_seq" not in ss:
-        ss.inv_seq = 1
-    if "company" not in ss:
-        ss.company = {
-            "name": "Nador West Med — Autorité Portuaire",
-            "address": "Port de Nador West Med, Betoya, Maroc",
-            "ice": "0027 5896 000 084", "if": "5289 3410",
-            "footer": "Règlement à 30 jours par virement bancaire. Zone Franche — "
-                      "montants exonérés de TVA.",
-        }
+    if not ss.get("_loaded"):
+        persisted = storage.load_state()
+        ss.vessels = persisted.get("vessels", _seed_vessels())
+        ss.catalog = persisted.get("catalog", billing.default_catalog())
+        ss.calls = persisted.get("calls", [])
+        ss.invoices = persisted.get("invoices", [])
+        ss.inv_seq = persisted.get("inv_seq", 1)
+        # Fusion avec les valeurs par défaut : garantit la présence de toutes les clés
+        # même si un enregistrement antérieur était partiel ou d'un ancien modèle.
+        ss.company = {**_DEFAULT_COMPANY, **(persisted.get("company") or {})}
+        ss._loaded = True
+        if not persisted:  # première exécution : on initialise la base
+            storage.save_state({k: ss[k] for k in storage.KEYS if k in ss})
     if "currency" not in ss:
         ss.currency = "EUR"
     if "fx_mad" not in ss:
@@ -97,6 +104,11 @@ def init_state():
 
 init_state()
 SS = st.session_state
+
+
+def persist():
+    """Enregistre l'état applicatif courant dans la base SQLite."""
+    storage.save_state({k: SS[k] for k in storage.KEYS if k in SS})
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -156,10 +168,16 @@ with st.sidebar:
         f"📊 {len(SS.vessels)} navires · {len(SS.catalog)} articles · "
         f"{len(SS.calls)} escales · {len(SS.invoices)} factures"
     )
+    _dbi = storage.db_info()
+    st.caption(f"💾 Données persistées (SQLite) · {_dbi['size_kb']} Ko"
+               if _dbi["exists"] else "💾 Persistance SQLite active")
     if st.button("↺ Réinitialiser les données", use_container_width=True):
-        for k in ["vessels", "catalog", "calls", "invoices", "inv_seq"]:
+        storage.clear_state()
+        for k in ["vessels", "catalog", "calls", "invoices", "inv_seq", "company",
+                  "_loaded", "active_call_ref", "active_call", "active_invoice"]:
             SS.pop(k, None)
         init_state()
+        st.success("Données réinitialisées.")
         st.rerun()
 
 
@@ -642,3 +660,9 @@ with tab_invoice:
                 "Total": money(t["total_ht"]),
             })
         st.dataframe(pd.DataFrame(hist), hide_index=True, use_container_width=True)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  PERSISTANCE — enregistre l'état courant à chaque exécution (fin de script)
+# ═══════════════════════════════════════════════════════════════════════════════
+persist()

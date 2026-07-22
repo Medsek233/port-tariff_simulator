@@ -8,3 +8,9 @@ env/
 .streamlit/secrets.toml
 factures_export/
 *.tmp
+# Base de données locale de persistance
+nwm_data.db
+nwm_data.db-wal
+nwm_data.db-shm
+*.sqlite
+*.sqlite3
