@@ -21,6 +21,7 @@ import pandas as pd
 import streamlit as st
 
 import billing
+import storage
 import tarifs_data as td
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -69,25 +70,32 @@ def _seed_vessels() -> list[dict]:
     ]
 
 
+_DEFAULT_COMPANY = {
+    "name": "Nador West Med — Autorité Portuaire",
+    "address": "Port de Nador West Med, Betoya, Maroc",
+    "ice": "0027 5896 000 084", "if": "5289 3410",
+    "footer": "Règlement à 30 jours par virement bancaire. Zone Franche — "
+              "montants exonérés de TVA.",
+}
+
+
 def init_state():
+    """Charge l'état persisté (SQLite) une fois par session ; sème les valeurs par
+    défaut et initialise la base si celle-ci est vide."""
     ss = st.session_state
-    if "vessels" not in ss:
-        ss.vessels = _seed_vessels()
-    if "catalog" not in ss:
-        ss.catalog = billing.default_catalog()
-    if "calls" not in ss:
-        ss.calls = []
-    if "invoices" not in ss:
-        ss.invoices = []
-    if "inv_seq" not in ss:
-        ss.inv_seq = 1
-    if "company" not in ss:
-        ss.company = {
-            "name": "Nador West Med — Autorité Portuaire",
-            "address": "Port de Nador West Med, Betoya, Maroc",
-            "ice": "0027 5896 000 084", "if": "5289 3410",
-            "footer": "Règlement à 30 jours par virement bancaire. Tous tarifs HT en EUR.",
-        }
+    if not ss.get("_loaded"):
+        persisted = storage.load_state()
+        ss.vessels = persisted.get("vessels", _seed_vessels())
+        ss.catalog = persisted.get("catalog", billing.default_catalog())
+        ss.calls = persisted.get("calls", [])
+        ss.invoices = persisted.get("invoices", [])
+        ss.inv_seq = persisted.get("inv_seq", 1)
+        # Fusion avec les valeurs par défaut : garantit la présence de toutes les clés
+        # même si un enregistrement antérieur était partiel ou d'un ancien modèle.
+        ss.company = {**_DEFAULT_COMPANY, **(persisted.get("company") or {})}
+        ss._loaded = True
+        if not persisted:  # première exécution : on initialise la base
+            storage.save_state({k: ss[k] for k in storage.KEYS if k in ss})
     if "currency" not in ss:
         ss.currency = "EUR"
     if "fx_mad" not in ss:
@@ -96,6 +104,11 @@ def init_state():
 
 init_state()
 SS = st.session_state
+
+
+def persist():
+    """Enregistre l'état applicatif courant dans la base SQLite."""
+    storage.save_state({k: SS[k] for k in storage.KEYS if k in SS})
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -155,10 +168,16 @@ with st.sidebar:
         f"📊 {len(SS.vessels)} navires · {len(SS.catalog)} articles · "
         f"{len(SS.calls)} escales · {len(SS.invoices)} factures"
     )
+    _dbi = storage.db_info()
+    st.caption(f"💾 Données persistées (SQLite) · {_dbi['size_kb']} Ko"
+               if _dbi["exists"] else "💾 Persistance SQLite active")
     if st.button("↺ Réinitialiser les données", use_container_width=True):
-        for k in ["vessels", "catalog", "calls", "invoices", "inv_seq"]:
+        storage.clear_state()
+        for k in ["vessels", "catalog", "calls", "invoices", "inv_seq", "company",
+                  "_loaded", "active_call_ref", "active_call", "active_invoice"]:
             SS.pop(k, None)
         init_state()
+        st.success("Données réinitialisées.")
         st.rerun()
 
 
@@ -175,13 +194,13 @@ with tab_dash:
     n_calls = len(SS.calls)
     n_inv = len(SS.invoices)
     ca_ht = sum(billing.invoice_totals(c["lines"])["total_ht"] for c in SS.calls)
-    ca_ttc = sum(billing.invoice_totals(c["lines"])["total_ttc"] for c in SS.calls)
+    n_vessels = len(SS.vessels)
 
     k1, k2, k3, k4 = st.columns(4)
-    k1.metric("Escales", n_calls)
-    k2.metric("Factures émises", n_inv)
-    k3.metric("CA prévisionnel HT", money(ca_ht))
-    k4.metric("CA prévisionnel TTC", money(ca_ttc))
+    k1.metric("Navires", n_vessels)
+    k2.metric("Escales", n_calls)
+    k3.metric("Factures émises", n_inv)
+    k4.metric("CA prévisionnel", money(ca_ht))
 
     st.divider()
 
@@ -216,7 +235,7 @@ with tab_dash:
                 "Réf": c["ref"], "Navire": v["name"] if v else "—",
                 "Terminal": c["terminal"], "Arrivée": c["eta"],
                 "Lignes": len(c["lines"]),
-                "Total HT": money(t["total_ht"]), "Total TTC": money(t["total_ttc"]),
+                "Total": money(t["total_ht"]),
                 "Statut": c.get("status", "Brouillon"),
             })
         st.dataframe(pd.DataFrame(recap), hide_index=True, use_container_width=True)
@@ -297,14 +316,12 @@ with tab_catalog:
             code = a.text_input("Code *", "")
             category = b.text_input("Catégorie", "Services")
             label = c.text_input("Désignation *", "")
-            d, e, f, g = st.columns(4)
+            d, e, f = st.columns(3)
             unit = d.text_input("Unité", "u")
             rate = e.number_input("Tarif unitaire", min_value=0.0, value=0.0, step=0.01,
                                   format="%.5f")
             basis = f.selectbox("Base de calcul", billing.BASES,
                                 format_func=lambda x: f"{x} — {billing.BASIS_LABEL[x]}")
-            vat = g.number_input("TVA %", min_value=0.0, max_value=100.0,
-                                 value=billing.TVA_DEFAULT, step=1.0)
             if st.form_submit_button("Ajouter l'article", type="primary"):
                 if not code or not label:
                     st.error("Code et désignation sont obligatoires.")
@@ -313,7 +330,7 @@ with tab_catalog:
                 else:
                     SS.catalog.append({
                         "code": code, "category": category, "label": label, "unit": unit,
-                        "rate": rate, "basis": basis, "vat": vat, "taxable": vat > 0,
+                        "rate": rate, "basis": basis, "vat": 0.0, "taxable": False,
                         "active": True,
                     })
                     st.success(f"Article « {code} » ajouté.")
@@ -331,8 +348,8 @@ with tab_catalog:
             "unit": st.column_config.TextColumn("Unité", width="small"),
             "rate": st.column_config.NumberColumn("Tarif", format="%.5f"),
             "basis": st.column_config.SelectboxColumn("Base", options=billing.BASES),
-            "vat": st.column_config.NumberColumn("TVA %", format="%.0f"),
-            "taxable": st.column_config.CheckboxColumn("Taxable"),
+            "vat": None,
+            "taxable": None,
             "active": st.column_config.CheckboxColumn("Actif"),
         },
     )
@@ -519,16 +536,16 @@ with tab_calls:
                 "unite": st.column_config.TextColumn("Unité", width="small"),
                 "pu": st.column_config.NumberColumn("P.U.", format="%.4f"),
                 "majoration": st.column_config.NumberColumn("Maj %", format="%.0f"),
-                "montant_ht": st.column_config.NumberColumn("Montant HT", format="%.2f"),
-                "tva": st.column_config.NumberColumn("TVA %", format="%.0f"),
+                "montant_ht": st.column_config.NumberColumn("Montant", format="%.2f"),
+                "tva": None,
             },
         )
 
         tot = billing.invoice_totals(edited_lines.to_dict("records"))
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Total HT", money(tot["total_ht"]))
-        m2.metric("TVA", money(tot["total_tva"]))
-        m3.metric("Total TTC", money(tot["total_ttc"]))
+        m1, m2 = st.columns(2)
+        m1.metric("Total escale", money(tot["total_ht"]))
+        m2.metric("Nombre de lignes", len(edited_lines))
+        st.caption("💡 Zone Franche — montants exonérés de TVA.")
 
         b1, b2, b3 = st.columns([1, 1, 2])
         if b1.button("💾 Enregistrer l'escale", type="primary"):
@@ -596,12 +613,12 @@ with tab_invoice:
 
             st.divider()
             st.markdown(f"### Facture {inv['number']}")
-            hc1, hc2, hc3 = st.columns(3)
-            hc1.metric("Total HT", money(tot["total_ht"]))
-            hc2.metric("TVA", money(tot["total_tva"]))
-            hc3.metric("Total TTC", money(tot["total_ttc"]))
+            hc1, hc2 = st.columns(2)
+            hc1.metric("Total à payer", money(tot["total_ht"]))
+            hc2.metric("Nombre de lignes", len(inv["lines"]))
+            st.caption("Exonéré de TVA — Zone Franche.")
             if SS.currency == "EUR" and SS.fx_mad:
-                st.caption(f"Contre-valeur TTC : **{tot['total_ttc']*SS.fx_mad:,.2f} MAD** "
+                st.caption(f"Contre-valeur : **{tot['total_ht']*SS.fx_mad:,.2f} MAD** "
                            f"(taux {SS.fx_mad:.2f})")
 
             html = billing.render_invoice_html(
@@ -640,6 +657,12 @@ with tab_invoice:
             hist.append({
                 "N° Facture": i["number"], "Date": i["date"], "Client": i["client_name"],
                 "Navire": i["vessel"].get("name", "—"), "Escale": i["call"]["ref"],
-                "Total HT": money(t["total_ht"]), "Total TTC": money(t["total_ttc"]),
+                "Total": money(t["total_ht"]),
             })
         st.dataframe(pd.DataFrame(hist), hide_index=True, use_container_width=True)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  PERSISTANCE — enregistre l'état courant à chaque exécution (fin de script)
+# ═══════════════════════════════════════════════════════════════════════════════
+persist()

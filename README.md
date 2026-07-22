@@ -32,6 +32,10 @@ factures dynamiques** pour le port de **Nador West Med (NWM)**, basée sur le
   **HTML imprimable (→ PDF)** et **CSV**.
 - **📈 Tableau de bord** — CA prévisionnel, répartition par catégorie de prestation,
   historique des escales et factures.
+- **💾 Persistance SQLite** — navires, catalogue, escales, factures et paramètres sont
+  automatiquement enregistrés dans une base SQLite (`nwm_data.db`) : les données
+  **survivent aux rafraîchissements de page** et aux redémarrages du serveur.
+- **🚫 Zone Franche** — montants **exonérés de TVA** (aucune TVA appliquée sur les factures).
 
 ## 📐 Tarifs NWM (Avril 2025) intégrés
 
@@ -90,6 +94,13 @@ git push -u origin claude/port-tariffs-invoices-streamlit-e8m0p6
 > 💡 Le fichier `.streamlit/config.toml` applique automatiquement le thème NWM.
 > Aucune variable secrète n'est nécessaire.
 
+> 💾 **Persistance :** la base `nwm_data.db` (SQLite) est créée automatiquement au premier
+> lancement. Sur Streamlit Community Cloud le disque est *éphémère* — les données sont
+> conservées tant que le conteneur reste actif, mais peuvent être réinitialisées lors d'un
+> redéploiement ou d'une longue mise en veille. Pour une durabilité permanente, définir la
+> variable d'environnement `NWM_DB_PATH` vers un volume persistant, ou brancher une base
+> externe (l'interface de `storage.py` reste identique).
+
 ---
 
 ## 📁 Structure
@@ -98,6 +109,7 @@ git push -u origin claude/port-tariffs-invoices-streamlit-e8m0p6
 port-tariff_simulator/
 ├── app.py                  # 🧾 Application principale — escales & facturation
 ├── billing.py              # Moteur de tarification & génération de factures
+├── storage.py              # Persistance des données (SQLite)
 ├── tarifs_data.py          # Données tarifaires (NWM Avril 2025, TM, Algeciras)
 ├── comparateur_tm_nwm.py   # 📊 Comparateur de tarifs (application secondaire)
 ├── requirements.txt        # Dépendances Python
