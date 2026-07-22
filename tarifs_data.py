@@ -21,11 +21,13 @@ DROITS_PORT_NAVIRES_TM = {
     "Navires GPL":                      {"nautique": 0.0066, "port": 0.0282, "stationnement": 0.0663},
 }
 
+# Cahier Tarifaire NWM — Avril 2025 (valeurs officielles à jour)
 DROITS_PORT_NAVIRES_NWM = {
-    "Terminal à Conteneurs":     {"nautique": 0.005,  "port": 0.02405, "stationnement": 0.053},
-    "Terminal Marchandises Div": {"nautique": 0.005,  "port": 0.0259,  "stationnement": 0.054},
-    "Terminal Hydrocarbures":    {"nautique": 0.006,  "port": 0.026,   "stationnement": 0.052},
-    "Terminal GAZ":              {"nautique": 0.007,  "port": 0.027,   "stationnement": 0.062},
+    "Terminal à Conteneurs":     {"nautique": 0.00539, "port": 0.026,  "stationnement": 0.055},
+    "Terminal Marchandises Div": {"nautique": 0.0056,  "port": 0.027,  "stationnement": 0.056},
+    "Terminal Hydrocarbures":    {"nautique": 0.006,   "port": 0.026,  "stationnement": 0.052},
+    "Terminal GAZ":              {"nautique": 0.007,   "port": 0.027,  "stationnement": 0.062},
+    "Terminal Rouliers – Car Carrier": {"nautique": 0.0056, "port": 0.0271, "stationnement": 0.0561},
 }
 
 # Règles stationnement TM: franchise 24h, 1/3 si ≤8h après franchise, plein tarif/24h si >8h
@@ -147,14 +149,29 @@ def calc_pilotage_tm(volume_m3, mouvement):
         return data["tranches2"][-1][2] if data.get("tranches2") else 2000
 
 
-# --- NWM: formule linéaire basée sur GTs ---
-def calc_pilotage_nwm_entree_sortie(gts):
-    """Pilotage NWM: 0.022641381 × GTs + 21.26, min 261.1€"""
-    return max(0.022641381 * gts + 21.25659786, 261.1)
+# --- NWM (Avril 2025): formule basée sur le Volume Géométrique V (m³) ---
+# Deux tranches de VG, minimum de perception 261,1 € par opération.
+def calc_pilotage_nwm_entree_sortie(vg):
+    """Pilotage NWM entrée/sortie (€) en fonction du Volume Géométrique V (m³).
+    Tranche 1 (V ≤ 180 000): -175,78 + 0,01033·V
+    Tranche 2 (V > 180 000): -0,4795 + 0,00703·V
+    Minimum de perception: 261,1 €."""
+    if vg <= 180000:
+        val = -175.78 + 0.01033 * vg
+    else:
+        val = -0.4795 + 0.00703 * vg
+    return max(val, 261.1)
 
-def calc_pilotage_nwm_chg_quai(gts):
-    """Pilotage NWM changement quai: 0.011521001 × GTs + 145.24, min 261.1€"""
-    return max(0.011521001 * gts + 145.23524, 261.1)
+def calc_pilotage_nwm_chg_quai(vg):
+    """Pilotage NWM changement de quai (€) en fonction du Volume Géométrique V (m³).
+    Tranche 1 (V ≤ 180 000): 74,2743 + 0,00483·V
+    Tranche 2 (V > 180 000): -13,426 + 0,00414·V
+    Minimum de perception: 261,1 €."""
+    if vg <= 180000:
+        val = 74.2743 + 0.00483 * vg
+    else:
+        val = -13.426 + 0.00414 * vg
+    return max(val, 261.1)
 
 # NWM majorations: navire désemparé = tarif doublé (×2)
 # NWM exonérations: navires de guerre, pêche marocains, remorqueurs marocains,
@@ -213,10 +230,17 @@ LAMANAGE_TM = {
 # TM: supplément durée +30% par heure entamée au-delà de la durée max
 # TM: lamanage TC1-TC4 NON mentionné dans le cahier (convention séparée)
 
-# NWM: formule linéaire basée sur GTs
-def calc_lamanage_nwm(gts):
-    """Lamanage NWM: 0.0108104 × GTs + 6.68"""
-    return 0.0108104 * gts + 6.68
+# NWM (Avril 2025): basé sur le mètre linéaire (LOA), min 80 €
+LAMANAGE_NWM = {"tarif_ml": 1.1596, "min": 80.0, "duree_max_h": 2, "suppl_pct": 30}
+
+def calc_lamanage_nwm(loa, duree_h=2.0):
+    """Lamanage NWM: 1,1596 €/mètre linéaire (LOA) par opération, min 80 €.
+    Supplément de durée: +30 % du tarif de base par heure entamée au-delà de 2 h."""
+    base = loa * LAMANAGE_NWM["tarif_ml"]
+    if duree_h and duree_h > LAMANAGE_NWM["duree_max_h"]:
+        extra_h = math.ceil(duree_h - LAMANAGE_NWM["duree_max_h"])
+        base += base * (LAMANAGE_NWM["suppl_pct"] / 100.0) * extra_h
+    return max(base, LAMANAGE_NWM["min"])
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -293,6 +317,7 @@ MARCHANDISES_DIV_NWM = {
     "Colis Lourds":               1.50,
     "Bobines de tôle":            1.50,
     "Marchandises en big bags":   0.82,
+    "Pales d'éolienne":           3.00,
     "Palettisées et autres":      0.82,
     "Bois (€/m³)":                0.65,
     "Ferraille":                  1.53,
@@ -333,6 +358,20 @@ MARCHANDISES_ROULIER_TM = {
 # TM: Primeurs/produits frais mer/escargots export = 110€ forfait
 # TM: MD +50%
 
+# NWM (Avril 2025) — droits de port sur marchandises Terminal Rouliers, en € (par unité)
+MARCHANDISES_ROULIER_NWM = {
+    "Remorques pleines":                          140,
+    "Remorques vides":                            28,
+    "Ensembles routiers pleins":                  140,
+    "Ensembles routiers vides":                   50,
+    "Camion/fourgon/engin ≤12m plein":            75,
+    "Camion/engin ≤12m vide":                     25,
+    "Véhicule/engin ≥18m (hors gabarit)":         200,
+    "Engin agricole et BTP":                      150,
+}
+# NWM: Marchandises Dangereuses (TIR) +50%
+
+# Ancienne table en DH (conservée pour compatibilité de l'ancien comparateur)
 MARCHANDISES_ROULIER_NWM_DH = {
     "Remorques pleines":                          1500.564,
     "Remorques vides":                            289.056,
@@ -343,7 +382,6 @@ MARCHANDISES_ROULIER_NWM_DH = {
     "Véhicule/engin ≥18m (hors gabarit)":         2212.382,
     "Engin agricole et BTP":                      1625.702,
 }
-# NWM: MD +50%
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 11. PASSAGERS ET VÉHICULES LÉGERS — TM
@@ -468,7 +506,9 @@ MRN_TM = {
 CONSULTATION_MEDICALE_TM = 100  # €
 
 REMORQUEUR_DISPO_TM = {"1-2h": 553.6, "3-12h": 532.8, "13h+": 512.0}  # €/h
-VEILLE_SECURITE = {"TM": 339.9, "NWM": 330.0}  # €/h/remorqueur
+# NWM (Avril 2025): mise à disposition remorqueur identique + attente/annulation 20%
+REMORQUEUR_DISPO_NWM = {"1-2h": 553.6, "3-12h": 532.8, "13h+": 512.0}  # €/h
+VEILLE_SECURITE = {"TM": 339.9, "NWM": 339.9}  # €/h/remorqueur (NWM Avril 2025)
 
 VEDETTE_PILOTAGE_TM = {"Intérieur port (€/h)": 100, "Rade/mouillage (€/h)": 175, "Minimum rade": 300}
 

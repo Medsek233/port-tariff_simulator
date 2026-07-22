@@ -1,89 +1,117 @@
-# 🚢 Simulateur de Tarifs Portuaires — TM vs NWM 2025
+# ⚓ Simulateur d'Escales & Facturation Portuaire — Nador West Med
 
-Simulateur interactif comparant les tarifs de **Tanger Med** et **Nador West Med** basé sur les cahiers tarifaires 2025.
+Application **Streamlit** de simulation des **tarifs d'escale** et de **génération de
+factures dynamiques** pour le port de **Nador West Med (NWM)**, basée sur le
+*Cahier Tarifaire NWM — Avril 2025*.
 
-## 📊 Éléments de facturation couverts (~250+ paramètres)
+> Deux applications sont fournies dans ce dépôt :
+> | Fichier | Rôle |
+> |---|---|
+> | **`app.py`** | 🧾 **Simulateur d'escales & facturation** (application principale) |
+> | `comparateur_tm_nwm.py` | 📊 Comparateur de tarifs Tanger Med vs NWM vs Algeciras |
 
-### Droits de Port sur Navires
-- Droit Nautique, Droit de Port, Droit de Stationnement
-- 5 terminaux TM (TC, Vrac/MD, Véhicules, Hydrocarbures, GPL)
-- 4 terminaux NWM (TC, MD, Hydrocarbures, GAZ)
-- Forfaits navires rouliers (3 catégories TM vs forfait unique NWM)
-- Règles de modulation (franchise 24h, 1/3, rade)
+---
 
-### Pilotage
-- TM: barème complet par tranche VG (8 tranches + 2ème tranche >180k m³), 4 types de mouvement
-- NWM: formule linéaire GTs (entrée/sortie + changement quai)
-- Majorations: PEC, retard, désemparé, dépassement durée
+## ✨ Fonctionnalités
 
-### Remorquage
-- TM: 16 tranches GT + supplément >50k GT
-- NWM: 11 tranches GT + supplément >50k GT
-- Majorations: sans propulsion, déhalage
-- Services spéciaux: mise à disposition, veille sécurité
+- **🚢 Référentiel navires** — flotte multi-navires (nom, IMO, pavillon, GT, LOA, largeur,
+  tirant d'eau). Le **Volume Géométrique (VG)** est calculé automatiquement
+  (`VG = L × B × T`, avec tirant minimum réglementaire `0,14·√(L·B)`).
+- **📖 Catalogue tarifaire éditable** — ~44 articles pré-chargés depuis le Cahier
+  Tarifaire NWM. **Ajout / modification / suppression** de n'importe quel article, avec
+  une *base de calcul* configurable (forfait, ×GT, ×VG, ×jours, formule pilotage, barème
+  remorquage, mètre linéaire lamanage…).
+- **🛳️ Escales multi-configurations** — création d'escales pour différents **navires**,
+  **terminaux** (conteneurs, MD, hydrocarbures, gaz, rouliers), **types de mouvement**
+  (entrée, sortie, changement de quai) et services rendus.
+- **⚙️ Chiffrage automatique** — génération des prestations (droits de port, pilotage,
+  remorquage, lamanage, droits marchandise) à partir des caractéristiques du navire et de
+  l'escale, puis **édition libre des lignes** (ajout / modification / suppression).
+- **🧾 Factures dynamiques** — numérotation automatique, dates & échéance, TVA par ligne,
+  totaux HT / TVA / TTC, contre-valeur en MAD. **Aperçu intégré** + export
+  **HTML imprimable (→ PDF)** et **CSV**.
+- **📈 Tableau de bord** — CA prévisionnel, répartition par catégorie de prestation,
+  historique des escales et factures.
 
-### Lamanage
-- TM: base LOA (2 catégories), min 80€, supplément durée +30%
-- NWM: formule linéaire GTs
+## 📐 Tarifs NWM (Avril 2025) intégrés
 
-### Conteneurs
-- Droits port sur marchandise (transbordement, import/export, cabotage)
-- Manutention TC1-TC4 (bord-quai, terre, pesage)
-- Stockage par terminal et type conteneur
+- **Droits de port navire** par terminal (nautique / port / stationnement, €/m³ VG) —
+  incl. catégorie *Car Carrier*.
+- **Pilotage** : formule par **Volume Géométrique** à 2 tranches (entrée-sortie &
+  changement de quai), minimum 261,1 €.
+- **Remorquage** : barème par tranche de GT + supplément 150 €/5000 GT au-delà de 50 000.
+- **Lamanage** : 1,1596 €/mètre linéaire (LOA), minimum 80 €, supplément durée +30 %/h.
+- **Droits marchandise** : conteneurs (transbordement / import-export / cabotage),
+  marchandises diverses, hydrocarbures (blancs/noirs), rouliers.
+- **Fournitures & services** : eau, électricité, veille sécurité, déchets…
 
-### Marchandises Diverses
-- 11+ catégories comparées (colis lourds, bobines, big bags, céréales, etc.)
+---
 
-### Hydrocarbures (NWM détaillé)
-- Produits blancs et noirs, 3 opérations
-
-### Roulier
-- Marchandises fret (7 catégories TM en €, 8 catégories NWM en DH)
-- Passagers et véhicules légers
-- Simulation fret avec conversion DH/EUR
-
-### Stockage
-- Conteneurs: 4 terminaux × 4 types × 3 périodes (TM)
-- Vrac: hangar et terre-plein (TM)
-- Parking TIR: import, export, MD (TM)
-
-### Services Divers (TM exclusivement)
-- Traction portuaire (14 opérations)
-- Taxi rade, sécurité, ZVCI, TVCU
-- MRN (déclaration européenne)
-- Fournitures eau/électricité
-
-### Coût Total Escale
-- Synthèse comparative avec graphique empilé
-- Analyse de sensibilité par volume EVP
-
-## 🚀 Lancement
+## 🚀 Lancement en local
 
 ```bash
-# Installer les dépendances
 pip install -r requirements.txt
-
-# Lancer l'application
 streamlit run app.py
 ```
 
-L'application sera accessible sur `http://localhost:8501`
+L'application est accessible sur `http://localhost:8501`.
+
+Pour le comparateur de tarifs :
+
+```bash
+streamlit run comparateur_tm_nwm.py
+```
+
+---
+
+## ☁️ Déploiement sur Streamlit Community Cloud (gratuit)
+
+### 1 · Envoyer le code sur GitHub
+
+```bash
+git add .
+git commit -m "Simulateur d'escales & facturation NWM"
+git push -u origin claude/port-tariffs-invoices-streamlit-e8m0p6
+```
+
+(ou fusionnez la branche dans `main` puis poussez.)
+
+### 2 · Déployer
+
+1. Aller sur **https://share.streamlit.io** et se connecter avec GitHub.
+2. Cliquer **« Create app »** → **« Deploy a public app from GitHub »**.
+3. Renseigner :
+   - **Repository** : `medsek233/port-tariff_simulator`
+   - **Branch** : `main` (ou votre branche)
+   - **Main file path** : `app.py`
+4. Cliquer **« Deploy »**. Streamlit installe `requirements.txt` et publie l'app à une
+   URL du type `https://<votre-app>.streamlit.app`.
+
+> 💡 Le fichier `.streamlit/config.toml` applique automatiquement le thème NWM.
+> Aucune variable secrète n'est nécessaire.
+
+---
 
 ## 📁 Structure
 
 ```
-simulateur_tarif/
-├── app.py              # Application Streamlit principale
-├── tarifs_data.py      # Données tarifaires (~250+ paramètres)
-├── requirements.txt    # Dépendances Python
-└── README.md           # Ce fichier
+port-tariff_simulator/
+├── app.py                  # 🧾 Application principale — escales & facturation
+├── billing.py              # Moteur de tarification & génération de factures
+├── tarifs_data.py          # Données tarifaires (NWM Avril 2025, TM, Algeciras)
+├── comparateur_tm_nwm.py   # 📊 Comparateur de tarifs (application secondaire)
+├── requirements.txt        # Dépendances Python
+├── .streamlit/config.toml  # Thème & configuration Streamlit
+└── README.md
 ```
 
-## 📌 Sources
+## 🧾 Générer un PDF de facture
 
-- Cahier Tarifaire Tanger Med 2025 (51 pages)
-- Cahier Tarifaire Nador West Med 2025 (~10 pages)
-- Paramètres Facturables TM2025 Complet (Excel)
+Depuis l'onglet **Factures**, télécharger la facture au format **HTML**, l'ouvrir dans un
+navigateur puis **Ctrl / Cmd + P → Enregistrer au format PDF**. La mise en page est
+optimisée pour l'impression.
 
 ---
-*Données extraites en février 2026 — Tous tarifs HT*
+
+*Tarifs HT en EUR — Source : Cahier Tarifaire NWM, Avril 2025. Outil de simulation ;
+les montants réels facturés font foi selon les conditions contractuelles en vigueur.*
