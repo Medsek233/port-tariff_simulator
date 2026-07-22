@@ -51,7 +51,7 @@ BASIS_LABEL = {
     "stationnement": "Stationnement (VG/durée)",
 }
 
-TVA_DEFAULT = 20.0  # % (Maroc)
+TVA_DEFAULT = 0.0  # Zone Franche — exonération de TVA
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -227,15 +227,14 @@ def render_invoice_html(inv: dict, company: dict, currency: str = "EUR",
           <td class="r">{l.get('quantite',0):,.2f}</td>
           <td class="c">{l.get('unite','')}</td>
           <td class="r">{l.get('pu',0):,.4f}</td>
-          <td class="r">{l.get('tva',0):.0f}%</td>
           <td class="r b">{_fmt(l.get('montant_ht',0), currency)}</td>
         </tr>"""
 
     fx_block = ""
     if fx_mad:
         fx_block = f"""
-        <tr><td class="lbl">Contre-valeur TTC (MAD)</td>
-        <td class="val">{_fmt(tot['total_ttc']*fx_mad, 'MAD')}</td></tr>"""
+        <tr><td class="lbl">Contre-valeur (MAD)</td>
+        <td class="val">{_fmt(tot['total_ht']*fx_mad, 'MAD')}</td></tr>"""
 
     v = inv.get("vessel", {})
     c = inv.get("call", {})
@@ -276,6 +275,7 @@ def render_invoice_html(inv: dict, company: dict, currency: str = "EUR",
   .totals .lbl {{ color:#5a6b7a; }} .totals .val {{ text-align:right; font-weight:600; }}
   .totals .grand td {{ background:#0b6e99; color:#fff; font-size:16px; font-weight:700;
                        border-radius:6px; }}
+  .fz {{ text-align:right; font-size:11px; color:#7a8b99; margin-top:8px; font-style:italic; }}
   footer {{ margin-top:32px; border-top:1px solid #dce7ef; padding-top:14px; font-size:11px;
            color:#7a8b99; text-align:center; }}
   @media print {{ body {{ padding:0; }} .noprint {{ display:none; }} }}
@@ -314,17 +314,17 @@ def render_invoice_html(inv: dict, company: dict, currency: str = "EUR",
   <table class="items">
     <thead><tr>
       <th style="width:32px">#</th><th>Désignation</th><th class="r">Qté</th>
-      <th class="c">Unité</th><th class="r">P.U.</th><th class="r">TVA</th><th class="r">Montant HT</th>
+      <th class="c">Unité</th><th class="r">P.U.</th><th class="r">Montant</th>
     </tr></thead>
     <tbody>{rows}</tbody>
   </table>
 
   <div class="totals"><table>
-    <tr><td class="lbl">Total HT</td><td class="val">{_fmt(tot['total_ht'], currency)}</td></tr>
-    <tr><td class="lbl">TVA</td><td class="val">{_fmt(tot['total_tva'], currency)}</td></tr>
-    <tr class="grand"><td>TOTAL TTC</td><td class="r">{_fmt(tot['total_ttc'], currency)}</td></tr>
+    <tr class="grand"><td>TOTAL À PAYER</td><td class="r">{_fmt(tot['total_ht'], currency)}</td></tr>
     {fx_block}
-  </table></div>
+  </table>
+  <p class="fz">Exonéré de TVA — Zone Franche (art. régime de zone franche).</p>
+  </div>
 
   <footer>
     {company.get('name','Nador West Med')} — {company.get('footer','Merci pour votre confiance. Règlement à 30 jours par virement bancaire.')}<br>
