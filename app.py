@@ -14,6 +14,7 @@ Lancement :  streamlit run app.py
 from __future__ import annotations
 
 import io
+import math
 import uuid
 from datetime import date, datetime, timedelta
 
@@ -449,14 +450,53 @@ with tab_calls:
                                         [f"{it['code']} · {it['label']}" for it in opt])
                     mcode = msel.split(" · ")[0]
 
-            maj_pilotage = st.slider("Majoration pilotage (%)", 0, 100, 0,
-                                     help="Ex : navire désemparé = +100%")
+            with st.expander("⚠️ Majorations & suppléments de durée (services)"):
+                st.caption("Selon le Cahier Tarifaire NWM — Avril 2025.")
+                mc1, mc2 = st.columns(2)
+                with mc1:
+                    st.markdown("**Pilotage**")
+                    pil_duree_h = st.number_input(
+                        "Durée opération pilotage (h)", 0.0, 24.0, 2.0, 0.5,
+                        help="Dépassement : +50 % par heure entamée au-delà de 2 h")
+                    pil_retard = st.checkbox("Retard confirmé (+50 %)")
+                    pil_retard20 = st.checkbox("Retard > 20 min, pilote à bord (+100 %)")
+                    pil_desempare = st.checkbox("Navire désemparé / pas maître (+100 %)")
+                with mc2:
+                    st.markdown("**Lamanage**")
+                    lam_duree_h = st.number_input(
+                        "Durée manœuvre lamanage (h)", 0.0, 24.0, 2.0, 0.5,
+                        help="Dépassement : +30 % par heure entamée au-delà de 2 h")
+                    st.markdown("**Remorquage**")
+                    rem_sans_prop = st.checkbox("Sans propulsion / pas maître (+25 %)")
+                    rem_dehalage = st.checkbox("Déhalage (25 % du tarif public)")
+
+            # Majoration pilotage cumulée (dépassement de durée + retards + désemparé)
+            maj_pilotage = 0.0
+            if pil_duree_h > 2:
+                maj_pilotage += 50 * math.ceil(pil_duree_h - 2)
+            if pil_retard:
+                maj_pilotage += 50
+            if pil_retard20:
+                maj_pilotage += 100
+            if pil_desempare:
+                maj_pilotage += 100
+            # Majoration remorquage : déhalage = 25 % du tarif (−75 %), sinon sans propulsion +25 %
+            maj_remorquage = -75.0 if rem_dehalage else (25.0 if rem_sans_prop else 0.0)
+            if maj_pilotage or maj_remorquage or lam_duree_h > 2:
+                st.markdown(
+                    f"<span class='pill warn'>Pilotage +{maj_pilotage:.0f}%</span>"
+                    f"<span class='pill warn'>Remorquage {maj_remorquage:+.0f}%</span>"
+                    f"<span class='pill warn'>Lamanage "
+                    f"{30*math.ceil(max(lam_duree_h-2,0)):+.0f}%</span>",
+                    unsafe_allow_html=True,
+                )
 
         st.divider()
         if st.button("⚙️ Générer les prestations", type="primary", use_container_width=True):
             ctx = billing.CallContext(gt=vessel["gt"], vg=vg, loa=vessel["loa"],
                                       sejour_h=sejour_h, jours=jours,
-                                      en_rade=en_rade, jour_rade=jour_rade)
+                                      en_rade=en_rade, jour_rade=jour_rade,
+                                      lamanage_h=lam_duree_h)
             lines = []
             cat_by_code = {it["code"]: it for it in SS.catalog if it.get("active", True)}
             term_pref = terminal.split()[-1][:3].upper()
@@ -479,7 +519,8 @@ with tab_calls:
             # Remorquage
             if "Remorquage" in svc and find("REM"):
                 total_mvt = nb_mvt + nb_cq
-                lines.append(billing.make_line(find("REM"), nb_tugs * max(total_mvt, 1), ctx))
+                lines.append(billing.make_line(find("REM"), nb_tugs * max(total_mvt, 1), ctx,
+                                               maj_remorquage))
             # Lamanage
             if "Lamanage" in svc and find("LAM"):
                 lines.append(billing.make_line(find("LAM"), nb_mvt + nb_cq, ctx))

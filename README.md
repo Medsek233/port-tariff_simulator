@@ -27,6 +27,9 @@ factures dynamiques** pour le port de **Nador West Med (NWM)**, basée sur le
 - **⚙️ Chiffrage automatique** — génération des prestations (droits de port, pilotage,
   remorquage, lamanage, droits marchandise) à partir des caractéristiques du navire et de
   l'escale, puis **édition libre des lignes** (ajout / modification / suppression).
+- **⚠️ Majorations & suppléments de durée** — dépassement de durée pilotage (+50 %/h > 2 h),
+  lamanage (+30 %/h > 2 h), retard confirmé (+50 %), retard > 20 min (+100 %), navire
+  désemparé (+100 %), remorquage sans propulsion (+25 %) et déhalage (25 % du tarif).
 - **🧾 Factures dynamiques** — numérotation automatique, dates & échéance, TVA par ligne,
   totaux HT / TVA / TTC, contre-valeur en MAD. **Aperçu intégré** + export
   **HTML imprimable (→ PDF)** et **CSV**.

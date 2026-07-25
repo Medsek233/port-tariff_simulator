@@ -132,6 +132,7 @@ class CallContext:
     jours: int = 1
     en_rade: bool = False
     jour_rade: int = 0
+    lamanage_h: float = 2.0  # durée de la manœuvre d'amarrage (supplément +30 %/h > 2 h)
 
 
 def compute_amount(item: dict, qty: float, ctx: CallContext) -> float:
@@ -160,8 +161,8 @@ def compute_amount(item: dict, qty: float, ctx: CallContext) -> float:
         unit = td.calc_remorquage(ctx.gt, td.REMORQUAGE_NWM, td.REMORQUAGE_NWM_SUP)
         return unit * max(q, 1)
     if basis == "lamanage":
-        # Durée de manœuvre d'amarrage (≤2 h en standard, sans supplément de durée).
-        return td.calc_lamanage_nwm(ctx.loa, 2.0) * max(q, 1)
+        # Supplément de durée +30 %/h au-delà de 2 h (durée de manœuvre d'amarrage).
+        return td.calc_lamanage_nwm(ctx.loa, ctx.lamanage_h) * max(q, 1)
     if basis == "stationnement":
         return td.calc_stationnement(ctx.vg, rate, ctx.sejour_h, ctx.en_rade, ctx.jour_rade)
     return rate * q
@@ -219,7 +220,7 @@ def render_invoice_html(inv: dict, company: dict, currency: str = "EUR",
 
     rows = ""
     for i, l in enumerate(lines, 1):
-        maj = f' <span class="maj">+{l["majoration"]:.0f}%</span>' if l.get("majoration") else ""
+        maj = f' <span class="maj">{l["majoration"]:+.0f}%</span>' if l.get("majoration") else ""
         rows += f"""
         <tr>
           <td class="c">{i}</td>
