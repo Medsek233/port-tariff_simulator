@@ -154,15 +154,17 @@ def default_itinerary() -> pd.DataFrame:
     """Itinéraire d'exemple : mouillage → accostage → shifting → mouillage → départ,
     sur plusieurs terminaux."""
     t0 = datetime.combine(date.today(), datetime.min.time()) + timedelta(hours=8)
+    #        mouvement, emplacement, datetime, pilotage, pil_h, pil_maj, remorqueurs, rem_maj, lamanage, lam_h
     rows = [
-        ("Arrivée / Mouillage",           "Rade (mouillage)",       t0,                       True,  0, False),
-        ("Accostage",                     "TCE — Conteneurs Est",   t0 + timedelta(hours=10), True,  2, True),
-        ("Changement de quai (shifting)", "TCO — Conteneurs Ouest", t0 + timedelta(hours=28), True,  2, True),
-        ("Retour mouillage",              "Rade (mouillage)",       t0 + timedelta(hours=40), True,  1, True),
-        ("Appareillage / Départ",         "Rade (mouillage)",       t0 + timedelta(hours=58), True,  2, False),
+        ("Arrivée / Mouillage",           "Rade (mouillage)",       t0,                       True,  2.0, 0.0, 0, 0.0, False, 2.0),
+        ("Accostage",                     "TCE — Conteneurs Est",   t0 + timedelta(hours=10), True,  2.0, 0.0, 2, 0.0, True,  2.0),
+        ("Changement de quai (shifting)", "TCO — Conteneurs Ouest", t0 + timedelta(hours=28), True,  2.0, 0.0, 2, 0.0, True,  2.0),
+        ("Retour mouillage",              "Rade (mouillage)",       t0 + timedelta(hours=40), True,  2.0, 0.0, 1, 0.0, True,  2.0),
+        ("Appareillage / Départ",         "Rade (mouillage)",       t0 + timedelta(hours=58), True,  2.0, 0.0, 2, 0.0, False, 2.0),
     ]
     return pd.DataFrame(rows, columns=[
-        "mouvement", "emplacement", "datetime", "pilotage", "remorqueurs", "lamanage"])
+        "mouvement", "emplacement", "datetime", "pilotage", "pil_h", "pil_maj",
+        "remorqueurs", "rem_maj", "lamanage", "lam_h"])
 
 
 def catalog_df():
@@ -473,52 +475,14 @@ with tab_calls:
                                         [f"{it['code']} · {it['label']}" for it in opt])
                     mcode = msel.split(" · ")[0]
 
-            with st.expander("⚠️ Majorations & suppléments de durée (services)"):
-                st.caption("Selon le Cahier Tarifaire NWM — Avril 2025.")
-                mc1, mc2 = st.columns(2)
-                with mc1:
-                    st.markdown("**Pilotage**")
-                    pil_duree_h = st.number_input(
-                        "Durée opération pilotage (h)", 0.0, 24.0, 2.0, 0.5,
-                        help="Dépassement : +50 % par heure entamée au-delà de 2 h")
-                    pil_retard = st.checkbox("Retard confirmé (+50 %)")
-                    pil_retard20 = st.checkbox("Retard > 20 min, pilote à bord (+100 %)")
-                    pil_desempare = st.checkbox("Navire désemparé / pas maître (+100 %)")
-                with mc2:
-                    st.markdown("**Lamanage**")
-                    lam_duree_h = st.number_input(
-                        "Durée manœuvre lamanage (h)", 0.0, 24.0, 2.0, 0.5,
-                        help="Dépassement : +30 % par heure entamée au-delà de 2 h")
-                    st.markdown("**Remorquage**")
-                    rem_sans_prop = st.checkbox("Sans propulsion / pas maître (+25 %)")
-                    rem_dehalage = st.checkbox("Déhalage (25 % du tarif public)")
-
-            # Majoration pilotage cumulée (dépassement de durée + retards + désemparé)
-            maj_pilotage = 0.0
-            if pil_duree_h > 2:
-                maj_pilotage += 50 * math.ceil(pil_duree_h - 2)
-            if pil_retard:
-                maj_pilotage += 50
-            if pil_retard20:
-                maj_pilotage += 100
-            if pil_desempare:
-                maj_pilotage += 100
-            # Majoration remorquage : déhalage = 25 % du tarif (−75 %), sinon sans propulsion +25 %
-            maj_remorquage = -75.0 if rem_dehalage else (25.0 if rem_sans_prop else 0.0)
-            if maj_pilotage or maj_remorquage or lam_duree_h > 2:
-                st.markdown(
-                    f"<span class='pill warn'>Pilotage +{maj_pilotage:.0f}%</span>"
-                    f"<span class='pill warn'>Remorquage {maj_remorquage:+.0f}%</span>"
-                    f"<span class='pill warn'>Lamanage "
-                    f"{30*math.ceil(max(lam_duree_h-2,0)):+.0f}%</span>",
-                    unsafe_allow_html=True,
-                )
-
-        # ---- Itinéraire de l'escale (pleine largeur)
+        # ---- Itinéraire de l'escale (pleine largeur) — majorations PAR MOUVEMENT
         st.markdown("##### 3 · Itinéraire de l'escale (mouvements)")
         st.caption("Une ligne par mouvement, dans l'ordre chronologique. `Emplacement` = "
                    "où se trouve le navire **à partir** de ce mouvement jusqu'au suivant. "
-                   "Cochez les services rendus lors de chaque mouvement.")
+                   "Les majorations et suppléments de durée sont saisis **par mouvement** : "
+                   "`Pil. h` / `Lam. h` = durée de la manœuvre (dépassement pilotage +50 %/h, "
+                   "lamanage +30 %/h au-delà de 2 h) ; `Pil. maj%` = retard/désemparé "
+                   "(+50 % / +100 %) ; `Rem. maj%` = sans propulsion (+25 %) ou déhalage (−75 %).")
         itin_df = st.data_editor(
             default_itinerary(), hide_index=True, use_container_width=True,
             num_rows="dynamic", key="itin_editor",
@@ -531,9 +495,18 @@ with tab_calls:
                 "datetime": st.column_config.DatetimeColumn(
                     "Date & heure", format="DD/MM/YYYY HH:mm", step=60, width="medium"),
                 "pilotage": st.column_config.CheckboxColumn("Pilotage"),
-                "remorqueurs": st.column_config.NumberColumn("Remorqueurs", min_value=0,
+                "pil_h": st.column_config.NumberColumn("Pil. h", min_value=0.0,
+                    max_value=48.0, step=0.5, help="Durée opération pilotage (+50 %/h > 2 h)"),
+                "pil_maj": st.column_config.NumberColumn("Pil. maj%", min_value=0.0,
+                    max_value=300.0, step=50.0, help="Retard confirmé +50 %, retard >20 min "
+                    "ou désemparé +100 %"),
+                "remorqueurs": st.column_config.NumberColumn("Remorq.", min_value=0,
                                                              max_value=4, step=1),
+                "rem_maj": st.column_config.NumberColumn("Rem. maj%", min_value=-100.0,
+                    max_value=100.0, step=25.0, help="Sans propulsion +25 %, déhalage −75 %"),
                 "lamanage": st.column_config.CheckboxColumn("Lamanage"),
+                "lam_h": st.column_config.NumberColumn("Lam. h", min_value=0.0,
+                    max_value=48.0, step=0.5, help="Durée manœuvre lamanage (+30 %/h > 2 h)"),
             },
         )
 
@@ -561,8 +534,10 @@ with tab_calls:
             pref = term_principal.split()[-1][:3].upper()
             rade_taux = td.DROITS_PORT_NAVIRES_NWM[term_principal]["stationnement"]
 
+            # lamanage_h reste à 2 h : le supplément de durée est appliqué par mouvement
+            # (colonne `lam_h` de l'itinéraire) via la majoration de chaque ligne.
             ctx = billing.CallContext(gt=vessel["gt"], vg=vg, loa=vessel["loa"],
-                                      sejour_h=sejour_h, jours=jours, lamanage_h=lam_duree_h)
+                                      sejour_h=sejour_h, jours=jours, lamanage_h=2.0)
             cat_by_code = {it["code"]: it for it in SS.catalog if it.get("active", True)}
 
             def find(code):
@@ -598,23 +573,35 @@ with tab_calls:
                     "montant_ht": round(stat_amount, 2), "tva": 0.0,
                 })
 
-            # --- Pilotage / Remorquage / Lamanage par mouvement
+            # --- Pilotage / Remorquage / Lamanage PAR MOUVEMENT (majorations propres à chaque mvt)
+            def _num(x, default=0.0):
+                try:
+                    return float(x)
+                except (TypeError, ValueError):
+                    return default
+
             for _, r in itin.iterrows():
                 mv = str(r["mouvement"])
                 is_shift = ("shifting" in mv.lower()) or ("changement" in mv.lower())
                 if "Pilotage" in svc and bool(r.get("pilotage")):
                     code = "PIL-CQ" if is_shift else "PIL-ES"
                     if find(code):
-                        l = billing.make_line(find(code), 1, ctx, maj_pilotage)
+                        pil_h = _num(r.get("pil_h"), 2.0)
+                        maj = _num(r.get("pil_maj"), 0.0)
+                        if pil_h > 2:  # dépassement de durée +50 %/h entamée
+                            maj += 50 * math.ceil(pil_h - 2)
+                        l = billing.make_line(find(code), 1, ctx, maj)
                         l["designation"] = f"{l['designation']} — {mv} ({r['emplacement']})"
                         lines.append(l)
-                ntug = int(r.get("remorqueurs", 0) or 0)
+                ntug = int(_num(r.get("remorqueurs"), 0))
                 if "Remorquage" in svc and ntug > 0 and find("REM"):
-                    l = billing.make_line(find("REM"), ntug, ctx, maj_remorquage)
+                    l = billing.make_line(find("REM"), ntug, ctx, _num(r.get("rem_maj"), 0.0))
                     l["designation"] = f"{l['designation']} — {mv}"
                     lines.append(l)
                 if "Lamanage" in svc and bool(r.get("lamanage")) and find("LAM"):
-                    l = billing.make_line(find("LAM"), 1, ctx)
+                    lam_h = _num(r.get("lam_h"), 2.0)
+                    lam_maj = 30 * math.ceil(lam_h - 2) if lam_h > 2 else 0.0
+                    l = billing.make_line(find("LAM"), 1, ctx, lam_maj)
                     l["designation"] = f"{l['designation']} — {mv}"
                     lines.append(l)
 
@@ -626,8 +613,10 @@ with tab_calls:
                 "mouvement": str(r["mouvement"]), "emplacement": str(r["emplacement"]),
                 "datetime": r["datetime"].strftime("%d/%m/%Y %H:%M"),
                 "pilotage": bool(r.get("pilotage")),
-                "remorqueurs": int(r.get("remorqueurs", 0) or 0),
-                "lamanage": bool(r.get("lamanage")),
+                "pil_h": _num(r.get("pil_h"), 2.0), "pil_maj": _num(r.get("pil_maj"), 0.0),
+                "remorqueurs": int(_num(r.get("remorqueurs"), 0)),
+                "rem_maj": _num(r.get("rem_maj"), 0.0),
+                "lamanage": bool(r.get("lamanage")), "lam_h": _num(r.get("lam_h"), 2.0),
             } for _, r in itin.iterrows()]
             emplacements = list(dict.fromkeys(itin["emplacement"].tolist()))
 
