@@ -132,6 +132,7 @@ class CallContext:
     jours: int = 1
     en_rade: bool = False
     jour_rade: int = 0
+    lamanage_h: float = 2.0  # durée de la manœuvre d'amarrage (supplément +30 %/h > 2 h)
 
 
 def compute_amount(item: dict, qty: float, ctx: CallContext) -> float:
@@ -160,8 +161,8 @@ def compute_amount(item: dict, qty: float, ctx: CallContext) -> float:
         unit = td.calc_remorquage(ctx.gt, td.REMORQUAGE_NWM, td.REMORQUAGE_NWM_SUP)
         return unit * max(q, 1)
     if basis == "lamanage":
-        # Durée de manœuvre d'amarrage (≤2 h en standard, sans supplément de durée).
-        return td.calc_lamanage_nwm(ctx.loa, 2.0) * max(q, 1)
+        # Supplément de durée +30 %/h au-delà de 2 h (durée de manœuvre d'amarrage).
+        return td.calc_lamanage_nwm(ctx.loa, ctx.lamanage_h) * max(q, 1)
     if basis == "stationnement":
         return td.calc_stationnement(ctx.vg, rate, ctx.sejour_h, ctx.en_rade, ctx.jour_rade)
     return rate * q
@@ -202,6 +203,62 @@ def next_invoice_number(seq: int, prefix: str = "NWM") -> str:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+#  STATIONNEMENT SUR ITINÉRAIRE (escale complexe multi-mouvements / multi-terminaux)
+# ═══════════════════════════════════════════════════════════════════════════════
+def calc_stationnement_legs(vg: float, legs: list[dict], franchise_h: float = 24.0,
+                            rade_seuil_h: float = 96.0) -> tuple[float, list[dict]]:
+    """Calcule le droit de stationnement sur une escale décomposée en tronçons (legs).
+
+    legs : liste ordonnée de dicts {label, is_rade, taux, dur_h} où
+      - taux  = taux de stationnement du terminal (€/m³/jour)
+      - is_rade = True si le tronçon est passé au mouillage (rade)
+      - dur_h = durée du tronçon en heures
+
+    Modèle (transparent) conforme au Cahier Tarifaire NWM Avril 2025 :
+      • franchise de 24 h appliquée aux toutes premières heures de l'escale ;
+      • taux de base au prorata horaire (VG × taux / 24) au-delà de la franchise ;
+      • mouillage en rade : 50 % du taux dès le 5ᵉ jour d'utilisation (au-delà de 96 h cumulées).
+
+    Renvoie (montant, détail_par_tronçon).
+    """
+    elapsed = 0.0        # heures écoulées depuis l'arrivée
+    rade_elapsed = 0.0   # heures cumulées passées en rade
+    total = 0.0
+    detail: list[dict] = []
+    for leg in legs:
+        taux = float(leg.get("taux", 0) or 0)
+        dur = float(leg.get("dur_h", 0) or 0)
+        is_rade = bool(leg.get("is_rade"))
+        hourly = vg * taux / 24.0
+        seg_cost = 0.0
+        seg_franchise = 0.0
+        seg_rade_red = 0.0
+        remaining = dur
+        while remaining > 1e-9:
+            step = min(1.0, remaining)
+            remaining -= step
+            in_franchise = elapsed < franchise_h
+            elapsed += step
+            if is_rade:
+                rade_elapsed += step
+            if in_franchise:
+                seg_franchise += step
+                continue
+            reduced = is_rade and rade_elapsed > rade_seuil_h
+            rate = hourly * (0.5 if reduced else 1.0)
+            seg_cost += rate * step
+            if reduced:
+                seg_rade_red += step
+        total += seg_cost
+        detail.append({
+            "tronçon": leg.get("label", ""), "rade": is_rade,
+            "durée_h": round(dur, 1), "franchise_h": round(seg_franchise, 1),
+            "rade_réduit_h": round(seg_rade_red, 1), "montant": round(seg_cost, 2),
+        })
+    return round(total, 2), detail
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 #  RENDU HTML DE LA FACTURE (imprimable / export PDF navigateur)
 # ═══════════════════════════════════════════════════════════════════════════════
 def _fmt(v, cur="EUR"):
@@ -219,7 +276,7 @@ def render_invoice_html(inv: dict, company: dict, currency: str = "EUR",
 
     rows = ""
     for i, l in enumerate(lines, 1):
-        maj = f' <span class="maj">+{l["majoration"]:.0f}%</span>' if l.get("majoration") else ""
+        maj = f' <span class="maj">{l["majoration"]:+.0f}%</span>' if l.get("majoration") else ""
         rows += f"""
         <tr>
           <td class="c">{i}</td>

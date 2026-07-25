@@ -21,12 +21,20 @@ factures dynamiques** pour le port de **Nador West Med (NWM)**, basée sur le
   Tarifaire NWM. **Ajout / modification / suppression** de n'importe quel article, avec
   une *base de calcul* configurable (forfait, ×GT, ×VG, ×jours, formule pilotage, barème
   remorquage, mètre linéaire lamanage…).
-- **🛳️ Escales multi-configurations** — création d'escales pour différents **navires**,
-  **terminaux** (conteneurs, MD, hydrocarbures, gaz, rouliers), **types de mouvement**
-  (entrée, sortie, changement de quai) et services rendus.
+- **🛳️ Escales complexes multi-mouvements / multi-terminaux** — chaque escale est un
+  **itinéraire chronologique** de mouvements (mouillage → accostage → shifting → mouillage
+  → départ…) avec **sélecteur date & heure** par mouvement. Chaque tronçon peut se trouver
+  sur un **terminal différent** (TCE, TCO, TRV, PP1-PP3, TGL, TMD, TVS ou rade), avec ses
+  **propres services** (pilotage, remorqueurs, lamanage cochés par mouvement).
+- **🅿️ Droit de stationnement par itinéraire** — calculé tronçon par tronçon au **taux de
+  chaque terminal**, avec franchise de 24 h et **réduction rade de 50 %** au-delà de 4 jours
+  de mouillage ; un détail par tronçon est affiché.
 - **⚙️ Chiffrage automatique** — génération des prestations (droits de port, pilotage,
   remorquage, lamanage, droits marchandise) à partir des caractéristiques du navire et de
   l'escale, puis **édition libre des lignes** (ajout / modification / suppression).
+- **⚠️ Majorations & suppléments de durée** — dépassement de durée pilotage (+50 %/h > 2 h),
+  lamanage (+30 %/h > 2 h), retard confirmé (+50 %), retard > 20 min (+100 %), navire
+  désemparé (+100 %), remorquage sans propulsion (+25 %) et déhalage (25 % du tarif).
 - **🧾 Factures dynamiques** — numérotation automatique, dates & échéance, TVA par ligne,
   totaux HT / TVA / TTC, contre-valeur en MAD. **Aperçu intégré** + export
   **HTML imprimable (→ PDF)** et **CSV**.
