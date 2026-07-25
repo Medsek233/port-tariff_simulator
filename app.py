@@ -311,12 +311,18 @@ with tab_vessels:
     if SS.vessels:
         disp = []
         for v in SS.vessels:
+            _decl, _min, _ret, _applied = draught_info(v)
             disp.append({
                 "Navire": v["name"], "Type": v["type"], "IMO": v["imo"], "Pavillon": v["flag"],
                 "GT": f"{v['gt']:,.0f}", "LOA": v["loa"], "Largeur": v["beam"],
-                "TE": v["draft"], "VG (m³)": f"{vessel_vg(v):,.0f}",
+                "TE déclaré (m)": f"{_decl:.2f}",
+                "Tirant retenu (m)": f"{_ret:.2f}{' ⚠️' if _applied else ''}",
+                "VG (m³)": f"{vessel_vg(v):,.0f}",
             })
         st.dataframe(pd.DataFrame(disp), hide_index=True, use_container_width=True)
+        if any(draught_info(v)[3] for v in SS.vessels):
+            st.caption("⚠️ Tirant retenu = minimum théorique 0,14·√(L·B), supérieur au "
+                       "tirant déclaré (appliqué au calcul du VG).")
 
         col_del, _ = st.columns([2, 4])
         with col_del:
