@@ -296,6 +296,19 @@ def render_invoice_html(inv: dict, company: dict, currency: str = "EUR",
     v = inv.get("vessel", {})
     c = inv.get("call", {})
 
+    # Tirant d'eau retenu pour le calcul du VG (min théorique 0,14·√(L·B) si supérieur)
+    te_used = v.get("draught_used")
+    te_decl = v.get("draught_declared")
+    if te_used is not None:
+        if te_decl is not None and te_used > te_decl:
+            draught_str = (f"{te_used:.2f} m <span style='color:#c0392b'>(min. théorique ; "
+                           f"déclaré {te_decl:.2f} m)</span>")
+        else:
+            draught_str = f"{te_used:.2f} m"
+        draught_row = f'<p><span class="k">Tirant retenu</span>{draught_str}</p>'
+    else:
+        draught_row = ""
+
     return f"""<!doctype html><html lang="fr"><head><meta charset="utf-8">
 <title>Facture {inv.get('number','')}</title>
 <style>
@@ -363,6 +376,7 @@ def render_invoice_html(inv: dict, company: dict, currency: str = "EUR",
       <p><span class="k">Navire</span><strong>{v.get('name','—')}</strong></p>
       <p><span class="k">IMO / Pavillon</span>{v.get('imo','—')} / {v.get('flag','—')}</p>
       <p><span class="k">GT / VG</span>{v.get('gt',0):,.0f} / {v.get('vg',0):,.0f} m³</p>
+      {draught_row}
       <p><span class="k">Terminal</span>{c.get('terminal','—')}</p>
       <p><span class="k">Poste / Séjour</span>{c.get('berth','—')} • {c.get('sejour_h',0):.0f} h</p>
     </div>
