@@ -123,6 +123,15 @@ def vessel_vg(v):
     return td.calc_vg(v["loa"], v["beam"], v["draft"]) if v else 0.0
 
 
+def draught_info(v):
+    """Renvoie (tirant_déclaré, tirant_min_théorique, tirant_retenu, min_appliqué)."""
+    if not v:
+        return 0.0, 0.0, 0.0, False
+    te_min = 0.14 * math.sqrt(v["loa"] * v["beam"])
+    te_ret = max(v["draft"], te_min)
+    return v["draft"], te_min, te_ret, te_min > v["draft"]
+
+
 def money(v, cur=None):
     cur = cur or SS.currency
     try:
@@ -407,12 +416,18 @@ with tab_calls:
             vname = st.selectbox("Navire", [v["name"] for v in SS.vessels])
             vessel = next(v for v in SS.vessels if v["name"] == vname)
             vg = vessel_vg(vessel)
+            te_decl, te_min, te_ret, te_applied = draught_info(vessel)
             st.markdown(
                 f"<span class='pill'>GT {vessel['gt']:,.0f}</span>"
                 f"<span class='pill'>VG {vg:,.0f} m³</span>"
+                f"<span class='pill{' warn' if te_applied else ''}'>Tirant retenu {te_ret:.2f} m</span>"
                 f"<span class='pill'>{vessel['type']}</span>",
                 unsafe_allow_html=True,
             )
+            if te_applied:
+                st.caption(f"⚓ Tirant déclaré {te_decl:.2f} m < minimum théorique "
+                           f"0,14·√(L·B) = **{te_min:.2f} m** → tirant retenu **{te_ret:.2f} m** "
+                           f"pour le calcul du VG.")
             client_name = st.text_input("Client / Armateur", "MSC Maroc SARL")
             client_addr = st.text_input("Adresse client", "Casablanca, Maroc")
             st.caption("🗺️ Construisez l'itinéraire complet de l'escale ci-dessous "
@@ -618,6 +633,10 @@ with tab_calls:
                 "eta": dt_a.strftime("%d/%m/%Y %H:%M"), "etd": dt_d.strftime("%d/%m/%Y %H:%M"),
                 "sejour_h": sejour_h, "jours": jours, "movements": [r["mouvement"] for r in itinerary_store],
                 "itinerary": itinerary_store, "stationnement_detail": stat_detail,
+                "vg": vg, "draught_declared": round(vessel["draft"], 2),
+                "draught_min": round(0.14 * math.sqrt(vessel["loa"] * vessel["beam"]), 2),
+                "draught_used": round(max(vessel["draft"],
+                                          0.14 * math.sqrt(vessel["loa"] * vessel["beam"])), 2),
                 "client_name": client_name, "client_address": client_addr,
                 "lines": lines, "status": "Brouillon",
             }
@@ -638,15 +657,24 @@ with tab_calls:
         SS.active_call_ref = sel_ref
         v = vessel_by_id(call["vessel_id"])
 
+        _te_used = call.get("draught_used")
+        _te_warn = _te_used is not None and _te_used > call.get("draught_declared", _te_used)
         st.markdown(
             f"<span class='pill'>{v['name'] if v else '—'}</span>"
             f"<span class='pill'>{call['terminal']}</span>"
             f"<span class='pill'>{call.get('berth','—')}</span>"
-            f"<span class='pill'>Arr. {call['eta']}</span>"
+            + (f"<span class='pill'>VG {call.get('vg',0):,.0f} m³</span>" if call.get('vg') else "")
+            + (f"<span class='pill{' warn' if _te_warn else ''}'>Tirant "
+               f"{_te_used:.2f} m</span>" if _te_used is not None else "")
+            + f"<span class='pill'>Arr. {call['eta']}</span>"
             f"<span class='pill'>Dép. {call['etd']}</span>"
             f"<span class='pill ok'>{call.get('status','Brouillon')}</span>",
             unsafe_allow_html=True,
         )
+        if _te_warn:
+            st.caption(f"⚓ Tirant retenu **{_te_used:.2f} m** (tirant déclaré "
+                       f"{call['draught_declared']:.2f} m < minimum théorique "
+                       f"0,14·√(L·B) = {call['draught_min']:.2f} m).")
 
         if call.get("itinerary"):
             with st.expander("🗺️ Itinéraire & détail du stationnement"):
@@ -735,7 +763,10 @@ with tab_invoice:
                 "date": inv_date.strftime("%d/%m/%Y"),
                 "due": (inv_date + timedelta(days=int(due_days))).strftime("%d/%m/%Y"),
                 "client_name": call["client_name"], "client_address": call["client_address"],
-                "vessel": {**v, "vg": vessel_vg(v)} if v else {},
+                "vessel": {**v, "vg": vessel_vg(v),
+                           "draught_used": call.get("draught_used"),
+                           "draught_declared": call.get("draught_declared"),
+                           "draught_min": call.get("draught_min")} if v else {},
                 "call": call, "lines": call["lines"],
             }
             call["status"] = "Facturée"
