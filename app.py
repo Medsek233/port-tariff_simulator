@@ -135,6 +135,27 @@ def terminals():
     return list(td.DROITS_PORT_NAVIRES_NWM.keys())
 
 
+MOVEMENTS = [
+    "Arrivée / Mouillage", "Accostage", "Changement de quai (shifting)",
+    "Retour mouillage", "Appareillage / Départ", "Autre mouvement",
+]
+
+
+def default_itinerary() -> pd.DataFrame:
+    """Itinéraire d'exemple : mouillage → accostage → shifting → mouillage → départ,
+    sur plusieurs terminaux."""
+    t0 = datetime.combine(date.today(), datetime.min.time()) + timedelta(hours=8)
+    rows = [
+        ("Arrivée / Mouillage",           "Rade (mouillage)",       t0,                       True,  0, False),
+        ("Accostage",                     "TCE — Conteneurs Est",   t0 + timedelta(hours=10), True,  2, True),
+        ("Changement de quai (shifting)", "TCO — Conteneurs Ouest", t0 + timedelta(hours=28), True,  2, True),
+        ("Retour mouillage",              "Rade (mouillage)",       t0 + timedelta(hours=40), True,  1, True),
+        ("Appareillage / Départ",         "Rade (mouillage)",       t0 + timedelta(hours=58), True,  2, False),
+    ]
+    return pd.DataFrame(rows, columns=[
+        "mouvement", "emplacement", "datetime", "pilotage", "remorqueurs", "lamanage"])
+
+
 def catalog_df():
     return pd.DataFrame(SS.catalog)
 
@@ -392,44 +413,25 @@ with tab_calls:
                 f"<span class='pill'>{vessel['type']}</span>",
                 unsafe_allow_html=True,
             )
-            terminal = st.selectbox("Terminal", terminals())
-            berth = st.text_input("Poste à quai", "P1")
-            d1, d2 = st.columns(2)
-            eta = d1.date_input("Arrivée (ETA)", value=date.today())
-            etd = d2.date_input("Départ (ETD)", value=date.today() + timedelta(days=2))
-            h1, h2 = st.columns(2)
-            eta_h = h1.number_input("Heure ETA", 0, 23, 8)
-            etd_h = h2.number_input("Heure ETD", 0, 23, 14)
-            dt_a = datetime.combine(eta, datetime.min.time()) + timedelta(hours=eta_h)
-            dt_d = datetime.combine(etd, datetime.min.time()) + timedelta(hours=etd_h)
-            sejour_h = max((dt_d - dt_a).total_seconds() / 3600.0, 0.0)
-            jours = max(1, -(-int(sejour_h) // 24))
-            st.caption(f"⏱️ Séjour : **{sejour_h:.0f} h** (~{jours} j)")
-
             client_name = st.text_input("Client / Armateur", "MSC Maroc SARL")
             client_addr = st.text_input("Adresse client", "Casablanca, Maroc")
+            st.caption("🗺️ Construisez l'itinéraire complet de l'escale ci-dessous "
+                       "(mouillage → accostage → shifting → mouillage → départ…). "
+                       "Chaque tronçon peut se trouver sur un terminal différent ; le "
+                       "droit de stationnement est calculé par terminal, avec franchise "
+                       "de 24 h et réduction rade de 50 % au-delà de 4 jours.")
 
         # ---- Prestations à générer
         with right:
-            st.markdown("##### 2 · Prestations & mouvements")
-            movements = st.multiselect(
-                "Mouvements pilotage / remorquage / lamanage",
-                ["Entrée", "Sortie", "Changement de quai"],
-                default=["Entrée", "Sortie"],
-            )
-            nb_mvt = sum(1 for m in movements if m in ("Entrée", "Sortie"))
-            nb_cq = sum(1 for m in movements if m == "Changement de quai")
-
+            st.markdown("##### 2 · Services à facturer")
             svc = st.multiselect(
                 "Services rendus",
                 ["Droits de port navire", "Pilotage", "Remorquage", "Lamanage",
                  "Marchandise", "Fournitures / Services"],
                 default=["Droits de port navire", "Pilotage", "Remorquage", "Lamanage"],
+                help="Le pilotage, le remorquage et le lamanage sont facturés par "
+                     "mouvement selon l'itinéraire (cases à cocher par tronçon).",
             )
-
-            nb_tugs = st.number_input("Remorqueurs par mouvement", 1, 4, 2)
-            en_rade = st.checkbox("Séjour en rade (réduction stationnement)")
-            jour_rade = st.number_input("Jours en rade", 0, 60, 0) if en_rade else 0
 
             st.markdown("**Marchandise (optionnel)**")
             mtype = st.selectbox("Type de marchandise",
@@ -491,61 +493,144 @@ with tab_calls:
                     unsafe_allow_html=True,
                 )
 
+        # ---- Itinéraire de l'escale (pleine largeur)
+        st.markdown("##### 3 · Itinéraire de l'escale (mouvements)")
+        st.caption("Une ligne par mouvement, dans l'ordre chronologique. `Emplacement` = "
+                   "où se trouve le navire **à partir** de ce mouvement jusqu'au suivant. "
+                   "Cochez les services rendus lors de chaque mouvement.")
+        itin_df = st.data_editor(
+            default_itinerary(), hide_index=True, use_container_width=True,
+            num_rows="dynamic", key="itin_editor",
+            column_config={
+                "mouvement": st.column_config.SelectboxColumn(
+                    "Mouvement", options=MOVEMENTS, width="medium", required=True),
+                "emplacement": st.column_config.SelectboxColumn(
+                    "Emplacement", options=list(td.BERTHS_NWM.keys()), width="medium",
+                    required=True),
+                "datetime": st.column_config.DatetimeColumn(
+                    "Date & heure", format="DD/MM/YYYY HH:mm", step=60, width="medium"),
+                "pilotage": st.column_config.CheckboxColumn("Pilotage"),
+                "remorqueurs": st.column_config.NumberColumn("Remorqueurs", min_value=0,
+                                                             max_value=4, step=1),
+                "lamanage": st.column_config.CheckboxColumn("Lamanage"),
+            },
+        )
+
         st.divider()
         if st.button("⚙️ Générer les prestations", type="primary", use_container_width=True):
+            itin = itin_df.copy()
+            itin = itin.dropna(subset=["datetime"])
+            itin["datetime"] = pd.to_datetime(itin["datetime"])
+            itin = itin.sort_values("datetime").reset_index(drop=True)
+
+            if len(itin) < 2:
+                st.error("L'itinéraire doit comporter au moins 2 mouvements "
+                         "(arrivée et départ) avec une date/heure.")
+                st.stop()
+
+            dt_a = itin["datetime"].iloc[0].to_pydatetime()
+            dt_d = itin["datetime"].iloc[-1].to_pydatetime()
+            sejour_h = max((dt_d - dt_a).total_seconds() / 3600.0, 0.0)
+            jours = max(1, -(-int(sejour_h) // 24))
+
+            # Terminal principal = premier emplacement à quai (non-rade)
+            term_principal = next(
+                (td.BERTHS_NWM[e] for e in itin["emplacement"] if td.BERTHS_NWM.get(e)),
+                "Terminal à Conteneurs")
+            pref = term_principal.split()[-1][:3].upper()
+            rade_taux = td.DROITS_PORT_NAVIRES_NWM[term_principal]["stationnement"]
+
             ctx = billing.CallContext(gt=vessel["gt"], vg=vg, loa=vessel["loa"],
-                                      sejour_h=sejour_h, jours=jours,
-                                      en_rade=en_rade, jour_rade=jour_rade,
-                                      lamanage_h=lam_duree_h)
-            lines = []
+                                      sejour_h=sejour_h, jours=jours, lamanage_h=lam_duree_h)
             cat_by_code = {it["code"]: it for it in SS.catalog if it.get("active", True)}
-            term_pref = terminal.split()[-1][:3].upper()
 
             def find(code):
                 return cat_by_code.get(code)
 
-            # Droits de port navire (selon terminal)
+            lines = []
+
+            # --- Droits de port navire : nautique + port (une fois, terminal principal)
             if "Droits de port navire" in svc:
-                for pre in ("DN", "DP", "DS"):
-                    it = find(f"{pre}-{term_pref}")
+                for pre in ("DN", "DP"):
+                    it = find(f"{pre}-{pref}")
                     if it:
                         lines.append(billing.make_line(it, 1, ctx))
-            # Pilotage
-            if "Pilotage" in svc:
-                if nb_mvt and find("PIL-ES"):
-                    lines.append(billing.make_line(find("PIL-ES"), nb_mvt, ctx, maj_pilotage))
-                if nb_cq and find("PIL-CQ"):
-                    lines.append(billing.make_line(find("PIL-CQ"), nb_cq, ctx, maj_pilotage))
-            # Remorquage
-            if "Remorquage" in svc and find("REM"):
-                total_mvt = nb_mvt + nb_cq
-                lines.append(billing.make_line(find("REM"), nb_tugs * max(total_mvt, 1), ctx,
-                                               maj_remorquage))
-            # Lamanage
-            if "Lamanage" in svc and find("LAM"):
-                lines.append(billing.make_line(find("LAM"), nb_mvt + nb_cq, ctx))
-            # Marchandise
+
+            # --- Droit de stationnement calculé sur l'itinéraire (par terminal / tronçon)
+            legs = []
+            for i in range(len(itin) - 1):
+                r, nxt = itin.iloc[i], itin.iloc[i + 1]
+                dur = (nxt["datetime"] - r["datetime"]).total_seconds() / 3600.0
+                empl = r["emplacement"]
+                tk = td.BERTHS_NWM.get(empl)
+                legs.append({
+                    "label": empl, "is_rade": tk is None,
+                    "taux": (td.DROITS_PORT_NAVIRES_NWM[tk]["stationnement"] if tk else rade_taux),
+                    "dur_h": max(dur, 0.0),
+                })
+            stat_amount, stat_detail = billing.calc_stationnement_legs(vg, legs)
+            if "Droits de port navire" in svc and stat_amount > 0:
+                lines.append({
+                    "code": "DS", "designation": f"Droit de stationnement (itinéraire, "
+                    f"{sejour_h:.0f} h / {len(legs)} tronçons)", "quantite": 1,
+                    "unite": "escale", "pu": round(stat_amount, 2), "majoration": 0,
+                    "montant_ht": round(stat_amount, 2), "tva": 0.0,
+                })
+
+            # --- Pilotage / Remorquage / Lamanage par mouvement
+            for _, r in itin.iterrows():
+                mv = str(r["mouvement"])
+                is_shift = ("shifting" in mv.lower()) or ("changement" in mv.lower())
+                if "Pilotage" in svc and bool(r.get("pilotage")):
+                    code = "PIL-CQ" if is_shift else "PIL-ES"
+                    if find(code):
+                        l = billing.make_line(find(code), 1, ctx, maj_pilotage)
+                        l["designation"] = f"{l['designation']} — {mv} ({r['emplacement']})"
+                        lines.append(l)
+                ntug = int(r.get("remorqueurs", 0) or 0)
+                if "Remorquage" in svc and ntug > 0 and find("REM"):
+                    l = billing.make_line(find("REM"), ntug, ctx, maj_remorquage)
+                    l["designation"] = f"{l['designation']} — {mv}"
+                    lines.append(l)
+                if "Lamanage" in svc and bool(r.get("lamanage")) and find("LAM"):
+                    l = billing.make_line(find("LAM"), 1, ctx)
+                    l["designation"] = f"{l['designation']} — {mv}"
+                    lines.append(l)
+
+            # --- Marchandise (une fois)
             if "Marchandise" in svc and mcode and mqty > 0 and find(mcode):
                 lines.append(billing.make_line(find(mcode), mqty, ctx))
+
+            itinerary_store = [{
+                "mouvement": str(r["mouvement"]), "emplacement": str(r["emplacement"]),
+                "datetime": r["datetime"].strftime("%d/%m/%Y %H:%M"),
+                "pilotage": bool(r.get("pilotage")),
+                "remorqueurs": int(r.get("remorqueurs", 0) or 0),
+                "lamanage": bool(r.get("lamanage")),
+            } for _, r in itin.iterrows()]
+            emplacements = list(dict.fromkeys(itin["emplacement"].tolist()))
 
             call = {
                 "id": str(uuid.uuid4()),
                 "ref": f"ESC-{datetime.now():%Y%m%d}-{len(SS.calls)+1:03d}",
-                "vessel_id": vessel["id"], "terminal": terminal, "berth": berth,
+                "vessel_id": vessel["id"], "terminal": term_principal,
+                "berth": " → ".join(emplacements),
                 "eta": dt_a.strftime("%d/%m/%Y %H:%M"), "etd": dt_d.strftime("%d/%m/%Y %H:%M"),
-                "sejour_h": sejour_h, "jours": jours, "movements": movements,
+                "sejour_h": sejour_h, "jours": jours, "movements": [r["mouvement"] for r in itinerary_store],
+                "itinerary": itinerary_store, "stationnement_detail": stat_detail,
                 "client_name": client_name, "client_address": client_addr,
                 "lines": lines, "status": "Brouillon",
             }
             SS.calls.append(call)
             SS.active_call = call["id"]
-            st.success(f"Escale **{call['ref']}** générée avec {len(lines)} prestations.")
+            st.success(f"Escale **{call['ref']}** générée : {len(lines)} prestations sur "
+                       f"{len(itinerary_store)} mouvements ({sejour_h:.0f} h).")
             st.rerun()
 
     # ---- Éditer une escale existante
     if SS.calls:
         st.divider()
-        st.markdown("##### 3 · Détail & édition des prestations d'une escale")
+        st.markdown("##### 4 · Détail & édition des prestations d'une escale")
         refs = [c["ref"] for c in SS.calls]
         default_idx = refs.index(SS.get("active_call_ref")) if SS.get("active_call_ref") in refs else len(refs) - 1
         sel_ref = st.selectbox("Escale", refs, index=default_idx)
@@ -556,11 +641,23 @@ with tab_calls:
         st.markdown(
             f"<span class='pill'>{v['name'] if v else '—'}</span>"
             f"<span class='pill'>{call['terminal']}</span>"
+            f"<span class='pill'>{call.get('berth','—')}</span>"
             f"<span class='pill'>Arr. {call['eta']}</span>"
             f"<span class='pill'>Dép. {call['etd']}</span>"
             f"<span class='pill ok'>{call.get('status','Brouillon')}</span>",
             unsafe_allow_html=True,
         )
+
+        if call.get("itinerary"):
+            with st.expander("🗺️ Itinéraire & détail du stationnement"):
+                st.markdown("**Mouvements**")
+                st.dataframe(pd.DataFrame(call["itinerary"]), hide_index=True,
+                             use_container_width=True)
+                if call.get("stationnement_detail"):
+                    st.markdown("**Stationnement par tronçon**")
+                    sd = pd.DataFrame(call["stationnement_detail"])
+                    sd["montant"] = sd["montant"].map(lambda x: money(x))
+                    st.dataframe(sd, hide_index=True, use_container_width=True)
 
         st.caption("Vous pouvez **ajouter des lignes** (bouton +), modifier les montants "
                    "ou en supprimer. Les modifications sont enregistrées ci-dessous.")

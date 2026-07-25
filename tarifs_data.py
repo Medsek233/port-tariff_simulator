@@ -30,6 +30,21 @@ DROITS_PORT_NAVIRES_NWM = {
     "Terminal Rouliers – Car Carrier": {"nautique": 0.0056, "port": 0.0271, "stationnement": 0.0561},
 }
 
+# Postes / terminaux NWM → terminal tarifaire (pour les droits de stationnement par poste).
+# "Rade (mouillage)" n'est pas un terminal : le taux appliqué est celui du terminal principal.
+BERTHS_NWM = {
+    "Rade (mouillage)":            None,
+    "TCE — Conteneurs Est":        "Terminal à Conteneurs",
+    "TCO — Conteneurs Ouest":      "Terminal à Conteneurs",
+    "TRV — Roulier / Véhicules":   "Terminal Rouliers – Car Carrier",
+    "PP1 — Poste pétrolier 1":     "Terminal Hydrocarbures",
+    "PP2 — Poste pétrolier 2":     "Terminal Hydrocarbures",
+    "PP3 — Poste pétrolier 3":     "Terminal Hydrocarbures",
+    "TGL — Terminal Gaz liquéfié": "Terminal GAZ",
+    "TMD — Marchandises diverses": "Terminal Marchandises Div",
+    "TVS — Vrac solide":           "Terminal Marchandises Div",
+}
+
 # Règles stationnement TM: franchise 24h, 1/3 si ≤8h après franchise, plein tarif/24h si >8h
 # Rade TM: 50% dès 6ème jour | Rade NWM: 50% dès 5ème jour
 # TM: exonération soutage 48h à l'ancre
