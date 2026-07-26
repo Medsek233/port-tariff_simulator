@@ -109,6 +109,12 @@ git push -u origin claude/port-tariffs-invoices-streamlit-e8m0p6
 > redéploiement ou d'une longue mise en veille. Pour une durabilité permanente, définir la
 > variable d'environnement `NWM_DB_PATH` vers un volume persistant, ou brancher une base
 > externe (l'interface de `storage.py` reste identique).
+>
+> 🗄️ **Sauvegarde / restauration :** la barre latérale propose **⬇️ Exporter la sauvegarde
+> (JSON)** — qui télécharge tout l'état (navires, catalogue, escales, factures) — et
+> **⬆️ Restaurer depuis une sauvegarde** pour le recharger. C'est le moyen le plus simple de
+> protéger les données contre le disque éphémère du cloud : exportez régulièrement, puis
+> réimportez après un redémarrage.
 
 ---
 

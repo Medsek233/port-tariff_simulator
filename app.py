@@ -204,6 +204,41 @@ with st.sidebar:
     _dbi = storage.db_info()
     st.caption(f"💾 Données persistées (SQLite) · {_dbi['size_kb']} Ko"
                if _dbi["exists"] else "💾 Persistance SQLite active")
+
+    # --- Sauvegarde / Restauration (protège du disque éphémère sur Streamlit Cloud)
+    st.download_button(
+        "⬇️ Exporter la sauvegarde (JSON)",
+        storage.export_state({k: SS[k] for k in storage.KEYS if k in SS}).encode("utf-8"),
+        file_name=f"sauvegarde_nwm_{datetime.now():%Y%m%d_%H%M}.json",
+        mime="application/json", use_container_width=True,
+        help="Télécharge tout l'état (navires, catalogue, escales, factures). "
+             "À conserver pour restaurer après un redémarrage du serveur.")
+
+    up = st.file_uploader("⬆️ Restaurer depuis une sauvegarde", type=["json"],
+                          key="restore_uploader")
+    if up is not None:
+        try:
+            restored = storage.parse_backup(up.getvalue())
+            if st.button("♻️ Restaurer ces données", type="primary",
+                         use_container_width=True):
+                for k in storage.KEYS:
+                    if k == "company":
+                        SS.company = {**_DEFAULT_COMPANY, **(restored.get("company") or {})}
+                    elif k in restored:
+                        SS[k] = restored[k]
+                persist()
+                for k in ["active_call_ref", "active_call", "active_invoice"]:
+                    SS.pop(k, None)
+                st.success(f"Sauvegarde restaurée : {len(restored.get('vessels', []))} "
+                           f"navires, {len(restored.get('calls', []))} escales, "
+                           f"{len(restored.get('invoices', []))} factures.")
+                st.rerun()
+            else:
+                st.caption(f"✓ Fichier valide — {len(restored.get('vessels', []))} navires, "
+                           f"{len(restored.get('calls', []))} escales prêts à restaurer.")
+        except ValueError as e:
+            st.error(f"Sauvegarde invalide : {e}")
+
     if st.button("↺ Réinitialiser les données", use_container_width=True):
         storage.clear_state()
         for k in ["vessels", "catalog", "calls", "invoices", "inv_seq", "company",

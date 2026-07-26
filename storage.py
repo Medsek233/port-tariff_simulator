@@ -101,3 +101,48 @@ def db_info() -> dict:
     exists = os.path.exists(DB_PATH)
     size = os.path.getsize(DB_PATH) if exists else 0
     return {"path": DB_PATH, "exists": exists, "size_kb": round(size / 1024, 1)}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  SAUVEGARDE / RESTAURATION (export & import JSON — utile sur disque éphémère)
+# ═══════════════════════════════════════════════════════════════════════════════
+BACKUP_VERSION = 1
+
+
+def export_state(state: dict) -> str:
+    """Sérialise l'état applicatif en JSON de sauvegarde (chaîne à télécharger)."""
+    from datetime import datetime as _dt
+    payload = {
+        "_backup": "nwm-portcall", "_version": BACKUP_VERSION,
+        "_exported_at": _dt.now().isoformat(timespec="seconds"),
+        "data": {k: state.get(k) for k in KEYS if k in state},
+    }
+    return json.dumps(payload, ensure_ascii=False, indent=2, default=str)
+
+
+def parse_backup(raw) -> dict:
+    """Valide et extrait les données d'un fichier de sauvegarde.
+
+    Accepte soit le format enveloppé {_backup, data:{…}}, soit un dict à plat
+    {vessels, catalog, …}. Renvoie un dict ne contenant que les clés connues.
+    Lève ValueError si le contenu est invalide.
+    """
+    if isinstance(raw, (bytes, bytearray)):
+        raw = raw.decode("utf-8")
+    if isinstance(raw, str):
+        try:
+            obj = json.loads(raw)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Fichier JSON invalide : {e}") from e
+    else:
+        obj = raw
+    if not isinstance(obj, dict):
+        raise ValueError("Le fichier de sauvegarde doit être un objet JSON.")
+    data = obj.get("data", obj)  # accepte enveloppé ou à plat
+    if not isinstance(data, dict):
+        raise ValueError("Section « data » invalide dans la sauvegarde.")
+    extracted = {k: data[k] for k in KEYS if k in data}
+    if not extracted:
+        raise ValueError("Aucune donnée reconnue (navires, catalogue, escales…) "
+                         "dans le fichier.")
+    return extracted
