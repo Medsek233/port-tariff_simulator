@@ -438,6 +438,13 @@ with tab_calls:
                            f"pour le calcul du VG.")
             client_name = st.text_input("Client / Armateur", "MSC Maroc SARL")
             client_addr = st.text_input("Adresse client", "Casablanca, Maroc")
+            bill_terminal = st.selectbox(
+                "Terminal de facturation (droits navire & tarif rade)",
+                ["Auto — 1er terminal accosté"] + terminals(),
+                help="Détermine le taux des droits nautique/port et le tarif de "
+                     "stationnement en rade. « Auto » = déduit du 1er accostage de "
+                     "l'itinéraire. Pour une escale **au mouillage seul**, choisissez "
+                     "explicitement le terminal ici.")
             st.caption("🗺️ Construisez l'itinéraire complet de l'escale ci-dessous "
                        "(mouillage → accostage → shifting → mouillage → départ…). "
                        "Chaque tronçon peut se trouver sur un terminal différent. Le droit "
@@ -529,10 +536,22 @@ with tab_calls:
             sejour_h = max((dt_d - dt_a).total_seconds() / 3600.0, 0.0)
             jours = max(1, -(-int(sejour_h) // 24))
 
-            # Terminal principal = premier emplacement à quai (non-rade)
-            term_principal = next(
-                (td.BERTHS_NWM[e] for e in itin["emplacement"] if td.BERTHS_NWM.get(e)),
-                "Terminal à Conteneurs")
+            # Terminal de facturation (droits navire & tarif rade) :
+            #   - explicite si l'utilisateur l'a choisi,
+            #   - sinon déduit du 1er accostage de l'itinéraire.
+            inferred_terminal = next(
+                (td.BERTHS_NWM[e] for e in itin["emplacement"] if td.BERTHS_NWM.get(e)), None)
+            if bill_terminal.startswith("Auto"):
+                term_principal = inferred_terminal
+            else:
+                term_principal = bill_terminal
+            if term_principal is None:
+                # Escale au mouillage seul et aucun terminal choisi : on ne peut pas
+                # deviner le taux des droits navire / rade.
+                st.error("Escale **au mouillage seul** : aucun terminal accosté détecté. "
+                         "Choisissez un **terminal de facturation** (section 1) pour "
+                         "appliquer le taux des droits navire et du stationnement en rade.")
+                st.stop()
             pref = term_principal.split()[-1][:3].upper()
             rade_taux = td.DROITS_PORT_NAVIRES_NWM[term_principal]["stationnement"]
 
