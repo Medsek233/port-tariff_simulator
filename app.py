@@ -14,6 +14,7 @@ Lancement :  streamlit run app.py
 from __future__ import annotations
 
 import io
+import json
 import math
 import uuid
 from datetime import date, datetime, timedelta
@@ -112,6 +113,46 @@ def persist():
     storage.save_state({k: SS[k] for k in storage.KEYS if k in SS})
 
 
+# --- Sauvegarde / restauration (logique locale à app.py : le script d'entrée est
+#     toujours ré-exécuté à neuf, ce qui évite tout souci de module importé « périmé »
+#     après un redéploiement sur Streamlit Cloud).
+BACKUP_VERSION = 1
+
+
+def export_backup_json() -> str:
+    """Sérialise l'état applicatif courant en JSON de sauvegarde."""
+    payload = {
+        "_backup": "nwm-portcall", "_version": BACKUP_VERSION,
+        "_exported_at": datetime.now().isoformat(timespec="seconds"),
+        "data": {k: SS[k] for k in storage.KEYS if k in SS},
+    }
+    return json.dumps(payload, ensure_ascii=False, indent=2, default=str)
+
+
+def parse_backup(raw) -> dict:
+    """Valide un fichier de sauvegarde et renvoie les données reconnues.
+
+    Accepte le format enveloppé {_backup, data:{…}} ou un dict à plat.
+    Lève ValueError si le contenu est invalide.
+    """
+    if isinstance(raw, (bytes, bytearray)):
+        raw = raw.decode("utf-8")
+    try:
+        obj = json.loads(raw) if isinstance(raw, str) else raw
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Fichier JSON invalide : {e}") from e
+    if not isinstance(obj, dict):
+        raise ValueError("Le fichier de sauvegarde doit être un objet JSON.")
+    data = obj.get("data", obj)
+    if not isinstance(data, dict):
+        raise ValueError("Section « data » invalide dans la sauvegarde.")
+    extracted = {k: data[k] for k in storage.KEYS if k in data}
+    if not extracted:
+        raise ValueError("Aucune donnée reconnue (navires, catalogue, escales…) "
+                         "dans le fichier.")
+    return extracted
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  HELPERS
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -208,7 +249,7 @@ with st.sidebar:
     # --- Sauvegarde / Restauration (protège du disque éphémère sur Streamlit Cloud)
     st.download_button(
         "⬇️ Exporter la sauvegarde (JSON)",
-        storage.export_state({k: SS[k] for k in storage.KEYS if k in SS}).encode("utf-8"),
+        export_backup_json().encode("utf-8"),
         file_name=f"sauvegarde_nwm_{datetime.now():%Y%m%d_%H%M}.json",
         mime="application/json", use_container_width=True,
         help="Télécharge tout l'état (navires, catalogue, escales, factures). "
@@ -218,7 +259,7 @@ with st.sidebar:
                           key="restore_uploader")
     if up is not None:
         try:
-            restored = storage.parse_backup(up.getvalue())
+            restored = parse_backup(up.getvalue())
             if st.button("♻️ Restaurer ces données", type="primary",
                          use_container_width=True):
                 for k in storage.KEYS:
