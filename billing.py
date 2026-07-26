@@ -214,46 +214,83 @@ def calc_stationnement_legs(vg: float, legs: list[dict], franchise_h: float = 24
       - is_rade = True si le tronçon est passé au mouillage (rade)
       - dur_h = durée du tronçon en heures
 
-    Modèle (transparent) conforme au Cahier Tarifaire NWM Avril 2025 :
-      • franchise de 24 h appliquée aux toutes premières heures de l'escale ;
-      • taux de base au prorata horaire (VG × taux / 24) au-delà de la franchise ;
-      • mouillage en rade : 50 % du taux dès le 5ᵉ jour d'utilisation (au-delà de 96 h cumulées).
+    Règles appliquées (Cahier Tarifaire NWM — Avril 2025) :
+      • franchise de 24 h à partir du franchissement de la limite administrative ;
+      • au-delà, facturation par **tranche indivisible de 24 h** : une période
+        résiduelle ≤ 8 h = 1/3 du taux de base ; une période > 8 h = tranche pleine ;
+      • mouillage en rade : **50 %** du taux de base dès le 5ᵉ jour (au-delà de 96 h
+        cumulées d'utilisation de la zone de mouillage) ;
+      • taux propre à chaque terminal : une tranche à cheval sur plusieurs terminaux
+        est répartie au prorata des heures passées sur chacun.
 
-    Renvoie (montant, détail_par_tronçon).
+    Renvoie (montant, détail_par_tranche).
     """
-    elapsed = 0.0        # heures écoulées depuis l'arrivée
-    rade_elapsed = 0.0   # heures cumulées passées en rade
+    # File d'attente des tronçons : [is_rade, taux, heures_restantes]
+    queue = [[bool(l.get("is_rade")), float(l.get("taux", 0) or 0),
+              max(float(l.get("dur_h", 0) or 0), 0.0)] for l in legs]
+    pos = {"i": 0}
+    rade_cum = 0.0  # heures cumulées en rade (seuil des 4 jours, franchise incluse)
+
+    def take(hours: float) -> list[tuple[bool, float, float]]:
+        """Consomme jusqu'à `hours` de la file ; renvoie [(is_rade, taux, h), …]."""
+        segs, need = [], hours
+        while need > 1e-9 and pos["i"] < len(queue):
+            seg = queue[pos["i"]]
+            if seg[2] <= 1e-9:
+                pos["i"] += 1
+                continue
+            use = min(seg[2], need)
+            segs.append((seg[0], seg[1], use))
+            seg[2] -= use
+            need -= use
+        return segs
+
+    def window_cost(segs, day_factor, denom):
+        """Coût d'une fenêtre : `day_factor` jour(s) au taux moyen (pondéré par les
+        heures) des tronçons de la fenêtre ; applique la réduction rade au-delà de 96 h."""
+        nonlocal rade_cum
+        eff_rate = 0.0   # Σ (part d'heures) × taux × facteur_rade  → taux journalier effectif
+        red_h = 0.0
+        for is_rade, taux, h in segs:
+            if is_rade:
+                over = max(0.0, (rade_cum + h) - rade_seuil_h)
+                over_in_seg = min(over, h)
+                rade_cum += h
+                eff_h = (h - over_in_seg) + 0.5 * over_in_seg
+                red_h += over_in_seg
+            else:
+                eff_h = h
+            eff_rate += (eff_h / denom) * vg * taux
+        return eff_rate * day_factor, red_h
+
+    # 1) Franchise 24 h (consommée, mais comptée dans l'occupation rade)
+    for is_rade, _taux, h in take(franchise_h):
+        if is_rade:
+            rade_cum += h
+
+    # 2) Tranches indivisibles de 24 h
     total = 0.0
     detail: list[dict] = []
-    for leg in legs:
-        taux = float(leg.get("taux", 0) or 0)
-        dur = float(leg.get("dur_h", 0) or 0)
-        is_rade = bool(leg.get("is_rade"))
-        hourly = vg * taux / 24.0
-        seg_cost = 0.0
-        seg_franchise = 0.0
-        seg_rade_red = 0.0
-        remaining = dur
-        while remaining > 1e-9:
-            step = min(1.0, remaining)
-            remaining -= step
-            in_franchise = elapsed < franchise_h
-            elapsed += step
-            if is_rade:
-                rade_elapsed += step
-            if in_franchise:
-                seg_franchise += step
-                continue
-            reduced = is_rade and rade_elapsed > rade_seuil_h
-            rate = hourly * (0.5 if reduced else 1.0)
-            seg_cost += rate * step
-            if reduced:
-                seg_rade_red += step
-        total += seg_cost
+    n = 0
+    while pos["i"] < len(queue) and any(q[2] > 1e-9 for q in queue[pos["i"]:]):
+        segs = take(24.0)
+        win_h = sum(s[2] for s in segs)
+        if win_h <= 1e-9:
+            break
+        n += 1
+        if win_h >= 24.0 - 1e-9:
+            cost, red_h = window_cost(segs, 1.0, 24.0)
+            regle = "tranche pleine (24 h)"
+        elif win_h <= 8.0:
+            cost, red_h = window_cost(segs, 1.0 / 3.0, win_h)
+            regle = f"résiduel {win_h:.1f} h ≤ 8 h → 1/3"
+        else:
+            cost, red_h = window_cost(segs, 1.0, win_h)
+            regle = f"résiduel {win_h:.1f} h > 8 h → tranche pleine"
+        total += cost
         detail.append({
-            "tronçon": leg.get("label", ""), "rade": is_rade,
-            "durée_h": round(dur, 1), "franchise_h": round(seg_franchise, 1),
-            "rade_réduit_h": round(seg_rade_red, 1), "montant": round(seg_cost, 2),
+            "tranche": n, "durée_h": round(win_h, 1), "règle": regle,
+            "rade_réduit_h": round(red_h, 1), "montant": round(cost, 2),
         })
     return round(total, 2), detail
 

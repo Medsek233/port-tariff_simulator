@@ -26,9 +26,10 @@ factures dynamiques** pour le port de **Nador West Med (NWM)**, basée sur le
   → départ…) avec **sélecteur date & heure** par mouvement. Chaque tronçon peut se trouver
   sur un **terminal différent** (TCE, TCO, TRV, PP1-PP3, TGL, TMD, TVS ou rade), avec ses
   **propres services** (pilotage, remorqueurs, lamanage cochés par mouvement).
-- **🅿️ Droit de stationnement par itinéraire** — calculé tronçon par tronçon au **taux de
-  chaque terminal**, avec franchise de 24 h et **réduction rade de 50 %** au-delà de 4 jours
-  de mouillage ; un détail par tronçon est affiché.
+- **🅿️ Droit de stationnement par itinéraire** — franchise de 24 h, puis facturation par
+  **tranche indivisible de 24 h** (1/3 du taux si période résiduelle ≤ 8 h, tranche pleine
+  si > 8 h) au **taux de chaque terminal**, avec **réduction rade de 50 %** au-delà de 4 jours
+  de mouillage ; un détail par tranche est affiché.
 - **⚙️ Chiffrage automatique** — génération des prestations (droits de port, pilotage,
   remorquage, lamanage, droits marchandise) à partir des caractéristiques du navire et de
   l'escale, puis **édition libre des lignes** (ajout / modification / suppression).
