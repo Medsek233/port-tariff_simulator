@@ -440,9 +440,11 @@ with tab_calls:
             client_addr = st.text_input("Adresse client", "Casablanca, Maroc")
             st.caption("🗺️ Construisez l'itinéraire complet de l'escale ci-dessous "
                        "(mouillage → accostage → shifting → mouillage → départ…). "
-                       "Chaque tronçon peut se trouver sur un terminal différent ; le "
-                       "droit de stationnement est calculé par terminal, avec franchise "
-                       "de 24 h et réduction rade de 50 % au-delà de 4 jours.")
+                       "Chaque tronçon peut se trouver sur un terminal différent. Le droit "
+                       "de stationnement applique la franchise de 24 h, puis la facturation "
+                       "par **tranche indivisible de 24 h** (1/3 du taux si résiduel ≤ 8 h, "
+                       "tranche pleine si > 8 h) au taux de chaque terminal, avec réduction "
+                       "rade de 50 % au-delà de 4 jours de mouillage.")
 
         # ---- Prestations à générer
         with right:
