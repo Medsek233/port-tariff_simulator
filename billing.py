@@ -412,7 +412,7 @@ def render_invoice_html(inv: dict, company: dict, currency: str = "EUR",
       <h3>Navire & Escale</h3>
       <p><span class="k">Navire</span><strong>{v.get('name','—')}</strong></p>
       <p><span class="k">IMO / Pavillon</span>{v.get('imo','—')} / {v.get('flag','—')}</p>
-      <p><span class="k">GT / VG</span>{v.get('gt',0):,.0f} / {v.get('vg',0):,.0f} m³</p>
+      <p><span class="k">GT / VG</span>{v.get('gt',0):,.0f} / {v.get('vg',0):,.2f} m³</p>
       {draught_row}
       <p><span class="k">Terminal</span>{c.get('terminal','—')}</p>
       <p><span class="k">Poste / Séjour</span>{c.get('berth','—')} • {c.get('sejour_h',0):.0f} h</p>

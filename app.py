@@ -165,12 +165,14 @@ def vessel_vg(v):
 
 
 def draught_info(v):
-    """Renvoie (tirant_déclaré, tirant_min_théorique, tirant_retenu, min_appliqué)."""
+    """Renvoie (tirant_déclaré, tirant_min_théorique, tirant_retenu, min_appliqué).
+    Toutes les valeurs sont arrondies à 2 décimales (cohérent avec calc_vg)."""
     if not v:
         return 0.0, 0.0, 0.0, False
-    te_min = 0.14 * math.sqrt(v["loa"] * v["beam"])
-    te_ret = max(v["draft"], te_min)
-    return v["draft"], te_min, te_ret, te_min > v["draft"]
+    te_decl = round(v["draft"], 2)
+    te_min = round(0.14 * math.sqrt(v["loa"] * v["beam"]), 2)
+    te_ret = max(te_decl, te_min)
+    return te_decl, te_min, te_ret, te_min > te_decl
 
 
 def money(v, cur=None):
@@ -395,7 +397,7 @@ with tab_vessels:
                 "GT": f"{v['gt']:,.0f}", "LOA": v["loa"], "Largeur": v["beam"],
                 "TE déclaré (m)": f"{_decl:.2f}",
                 "Tirant retenu (m)": f"{_ret:.2f}{' ⚠️' if _applied else ''}",
-                "VG (m³)": f"{vessel_vg(v):,.0f}",
+                "VG (m³)": f"{vessel_vg(v):,.2f}",
             })
         st.dataframe(pd.DataFrame(disp), hide_index=True, use_container_width=True)
         if any(draught_info(v)[3] for v in SS.vessels):
@@ -503,7 +505,7 @@ with tab_calls:
             te_decl, te_min, te_ret, te_applied = draught_info(vessel)
             st.markdown(
                 f"<span class='pill'>GT {vessel['gt']:,.0f}</span>"
-                f"<span class='pill'>VG {vg:,.0f} m³</span>"
+                f"<span class='pill'>VG {vg:,.2f} m³</span>"
                 f"<span class='pill{' warn' if te_applied else ''}'>Tirant retenu {te_ret:.2f} m</span>"
                 f"<span class='pill'>{vessel['type']}</span>",
                 unsafe_allow_html=True,
@@ -727,8 +729,8 @@ with tab_calls:
                 "itinerary": itinerary_store, "stationnement_detail": stat_detail,
                 "vg": vg, "draught_declared": round(vessel["draft"], 2),
                 "draught_min": round(0.14 * math.sqrt(vessel["loa"] * vessel["beam"]), 2),
-                "draught_used": round(max(vessel["draft"],
-                                          0.14 * math.sqrt(vessel["loa"] * vessel["beam"])), 2),
+                "draught_used": round(max(round(vessel["draft"], 2),
+                                          round(0.14 * math.sqrt(vessel["loa"] * vessel["beam"]), 2)), 2),
                 "client_name": client_name, "client_address": client_addr,
                 "lines": lines, "status": "Brouillon",
             }
@@ -755,7 +757,7 @@ with tab_calls:
             f"<span class='pill'>{v['name'] if v else '—'}</span>"
             f"<span class='pill'>{call['terminal']}</span>"
             f"<span class='pill'>{call.get('berth','—')}</span>"
-            + (f"<span class='pill'>VG {call.get('vg',0):,.0f} m³</span>" if call.get('vg') else "")
+            + (f"<span class='pill'>VG {call.get('vg',0):,.2f} m³</span>" if call.get('vg') else "")
             + (f"<span class='pill{' warn' if _te_warn else ''}'>Tirant "
                f"{_te_used:.2f} m</span>" if _te_used is not None else "")
             + f"<span class='pill'>Arr. {call['eta']}</span>"

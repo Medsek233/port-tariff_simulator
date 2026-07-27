@@ -564,10 +564,11 @@ DIVERS_TM = {
 
 def calc_vg(loa, beam, draft):
     """Calcule le Volume Géométrique conformément à la formule officielle.
-    Te min = 0.14 × √(L × b)"""
-    te_min = 0.14 * math.sqrt(loa * beam)
-    te = max(draft, te_min)
-    return loa * beam * te
+    Te min = 0.14 × √(L × b). Toutes les valeurs sont arrondies à 2 décimales
+    (tirant et VG) afin que le résultat corresponde à un calcul manuel à 2 décimales."""
+    te_min = round(0.14 * math.sqrt(loa * beam), 2)
+    te = max(round(draft, 2), te_min)
+    return round(loa * beam * te, 2)
 
 def calc_stationnement(vg, taux_base, sejour_h, en_rade=False, jour_rade=0):
     """Calcule le droit de stationnement selon les règles communes."""
