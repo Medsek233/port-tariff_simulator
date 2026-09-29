@@ -11,7 +11,10 @@ le moteur entièrement dynamique : l'utilisateur peut ajouter / modifier des art
 """
 from __future__ import annotations
 
+import base64
+import functools
 import math
+import os
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -296,146 +299,285 @@ def calc_stationnement_legs(vg: float, legs: list[dict], franchise_h: float = 24
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  RENDU HTML DE LA FACTURE (imprimable / export PDF navigateur)
+#  RENDU HTML DE LA FACTURE — mise en page « Autorité Portuaire » (imprimable / PDF)
 # ═══════════════════════════════════════════════════════════════════════════════
-def _fmt(v, cur="EUR"):
+def _num(v) -> str:
+    """Nombre au format français : 12 345,67 (espace milliers, virgule décimale)."""
     try:
-        return f"{float(v):,.2f}".replace(",", " ").replace(".", ",") + f" {cur}"
+        return f"{float(v):,.2f}".replace(",", " ").replace(".", ",")
     except Exception:
-        return str(v)
+        return ""
+
+
+def _fmt(v, cur="EUR") -> str:
+    return f"{_num(v)} {cur}"
+
+
+@functools.lru_cache(maxsize=1)
+def _logo_data_uri() -> str:
+    """Logo NWM encodé en data URI (embarqué dans la facture autonome)."""
+    path = os.path.join(os.path.dirname(__file__), "assets", "nwm_logo.png")
+    try:
+        with open(path, "rb") as f:
+            b64 = base64.b64encode(f.read()).decode("ascii")
+        return f"data:image/png;base64,{b64}"
+    except Exception:
+        return ""
+
+
+# --- Conversion d'un montant en toutes lettres (français) ---
+_UNITS = ["zéro", "un", "deux", "trois", "quatre", "cinq", "six", "sept", "huit", "neuf",
+          "dix", "onze", "douze", "treize", "quatorze", "quinze", "seize", "dix-sept",
+          "dix-huit", "dix-neuf"]
+_TENS = {20: "vingt", 30: "trente", 40: "quarante", 50: "cinquante", 60: "soixante",
+         70: "soixante", 80: "quatre-vingt", 90: "quatre-vingt"}
+
+
+def _below_100(n: int) -> str:
+    if n < 20:
+        return _UNITS[n]
+    ten, unit = (n // 10) * 10, n % 10
+    if ten in (70, 90):
+        base = _TENS[ten] + "-" + _below_100(10 + unit)
+        return base
+    word = _TENS[ten]
+    if unit == 1 and ten in (20, 30, 40, 50, 60):
+        return word + "-et-un"
+    if ten == 80 and unit == 0:
+        return word + "s"
+    return word + ("-" + _UNITS[unit] if unit else "")
+
+
+def _below_1000(n: int) -> str:
+    if n < 100:
+        return _below_100(n)
+    cent, rest = n // 100, n % 100
+    prefix = "" if cent == 1 else _UNITS[cent] + " "
+    if rest == 0:
+        return (prefix + "cent" + ("s" if cent > 1 else "")).strip()
+    return (prefix + "cent " + _below_100(rest)).strip()
+
+
+def _int_en_lettres(n: int) -> str:
+    if n == 0:
+        return "zéro"
+    parts, scales = [], [(10**9, "milliard"), (10**6, "million"), (1000, "mille")]
+    for value, name in scales:
+        if n >= value:
+            count = n // value
+            n %= value
+            if name == "mille":
+                head = "" if count == 1 else _below_1000(count) + " "
+                parts.append((head + "mille").strip())
+            else:
+                plural = "s" if count > 1 else ""
+                parts.append(_below_1000(count) + " " + name + plural)
+    if n > 0:
+        parts.append(_below_1000(n))
+    return " ".join(parts)
+
+
+def montant_en_lettres(total: float, devise: str = "EUR") -> str:
+    """Ex. : 14 587,56 → 'Quatorze mille cinq cent quatre-vingt-sept Euros cinquante-six Cents'."""
+    total = round(float(total), 2)
+    euros = int(total)
+    cents = int(round((total - euros) * 100))
+    unite = {"EUR": ("Euro", "Euros"), "USD": ("Dollar", "Dollars"),
+             "MAD": ("Dirham", "Dirhams")}.get(devise, ("Euro", "Euros"))
+    mots = _int_en_lettres(euros).capitalize() + " " + (unite[1] if euros != 1 else unite[0])
+    if cents:
+        mots += " " + _int_en_lettres(cents) + (" Cents" if cents > 1 else " Cent")
+    return mots
 
 
 def render_invoice_html(inv: dict, company: dict, currency: str = "EUR",
                         fx_mad: float | None = None) -> str:
-    """Génère une facture HTML autonome, imprimable (Ctrl+P → PDF)."""
+    """Génère une facture HTML autonome (mise en page Autorité Portuaire), imprimable."""
     lines = inv.get("lines", [])
     tot = invoice_totals(lines)
-
-    rows = ""
-    for i, l in enumerate(lines, 1):
-        maj = f' <span class="maj">{l["majoration"]:+.0f}%</span>' if l.get("majoration") else ""
-        rows += f"""
-        <tr>
-          <td class="c">{i}</td>
-          <td><span class="code">{l.get('code','')}</span> {l.get('designation','')}{maj}</td>
-          <td class="r">{l.get('quantite',0):,.2f}</td>
-          <td class="c">{l.get('unite','')}</td>
-          <td class="r">{l.get('pu',0):,.4f}</td>
-          <td class="r b">{_fmt(l.get('montant_ht',0), currency)}</td>
-        </tr>"""
-
-    fx_block = ""
-    if fx_mad:
-        fx_block = f"""
-        <tr><td class="lbl">Contre-valeur (MAD)</td>
-        <td class="val">{_fmt(tot['total_ht']*fx_mad, 'MAD')}</td></tr>"""
-
+    total_ht = tot["total_ht"]
     v = inv.get("vessel", {})
     c = inv.get("call", {})
+    logo = _logo_data_uri()
 
-    # Tirant d'eau retenu pour le calcul du VG (min théorique 0,14·√(L·B) si supérieur)
-    te_used = v.get("draught_used")
-    te_decl = v.get("draught_declared")
-    if te_used is not None:
-        if te_decl is not None and te_used > te_decl:
-            draught_str = (f"{te_used:.2f} m <span style='color:#c0392b'>(min. théorique ; "
-                           f"déclaré {te_decl:.2f} m)</span>")
-        else:
-            draught_str = f"{te_used:.2f} m"
-        draught_row = f'<p><span class="k">Tirant retenu</span>{draught_str}</p>'
-    else:
-        draught_row = ""
+    # Lignes de prestations : Qté × Tarif unitaire = Montant (tarif unitaire effectif)
+    body_rows = ""
+    for l in lines:
+        qte = float(l.get("quantite", 1) or 1)
+        montant = float(l.get("montant_ht", 0) or 0)
+        tarif_u = montant / qte if qte else montant
+        maj = l.get("majoration") or 0
+        nature = l.get("designation", "")
+        if maj:
+            nature += f' <span class="maj">({maj:+.0f} %)</span>'
+        body_rows += (
+            "<tr>"
+            f'<td class="code">{l.get("code","")}</td>'
+            f'<td>{nature}</td>'
+            f'<td class="c">{l.get("unite","")}</td>'
+            f'<td class="c">{_num(qte)}</td>'
+            f'<td class="r">{_num(tarif_u)}</td>'
+            f'<td class="r"></td>'
+            f'<td class="r">{_num(montant)}</td>'
+            "</tr>"
+        )
+    # Remplissage pour garder une hauteur de tableau stable
+    filler = max(0, 8 - len(lines))
+    for _ in range(filler):
+        body_rows += ("<tr class='empty'><td></td><td></td><td></td><td></td>"
+                      "<td></td><td></td><td></td></tr>")
+
+    ttc = total_ht  # Zone Franche : pas de TVA
+    mad_line = ""
+    if fx_mad and currency == "EUR":
+        mad_line = (f'<div class="cv">Contre-valeur : <b>{_fmt(total_ht*fx_mad, "MAD")}</b> '
+                    f'(taux {fx_mad:.2f})</div>')
+
+    swift = company.get("swift", "")
+    rib_line = f"RIB : {company.get('rib','')}" + (f" — SWIFT : {swift}" if swift else "")
+    multicanal = company.get("multicanal", "")
+    multi_line = (f'<div class="pay">Paiement multicanal : <b>{multicanal}</b></div>'
+                  if multicanal else "")
+
+    tel = company.get("tel", "")
+    web = company.get("web", "")
+    foot_contact = " &nbsp;·&nbsp; ".join([x for x in [tel, web] if x])
+    foot_contact = f"<br>{foot_contact}" if foot_contact else ""
 
     return f"""<!doctype html><html lang="fr"><head><meta charset="utf-8">
 <title>Facture {inv.get('number','')}</title>
 <style>
-  * {{ box-sizing: border-box; }}
-  body {{ font-family: 'Segoe UI', Arial, sans-serif; color:#1a2b3c; margin:0; padding:32px;
-         background:#fff; }}
-  .wrap {{ max-width: 900px; margin:0 auto; }}
-  header {{ display:flex; justify-content:space-between; align-items:flex-start;
-           border-bottom:3px solid #0b6e99; padding-bottom:18px; }}
-  .brand h1 {{ margin:0; font-size:22px; color:#0b3c5d; letter-spacing:.5px; }}
-  .brand p  {{ margin:2px 0; font-size:12px; color:#5a6b7a; }}
-  .doc {{ text-align:right; }}
-  .doc h2 {{ margin:0; font-size:28px; color:#0b6e99; letter-spacing:2px; }}
-  .doc .num {{ font-size:14px; font-weight:600; }}
-  .doc .meta {{ font-size:12px; color:#5a6b7a; }}
-  .parties {{ display:flex; gap:24px; margin:24px 0; }}
-  .card {{ flex:1; background:#f4f8fb; border:1px solid #dce7ef; border-radius:8px; padding:14px 16px; }}
-  .card h3 {{ margin:0 0 8px; font-size:11px; text-transform:uppercase; letter-spacing:1px;
-            color:#0b6e99; }}
-  .card p {{ margin:2px 0; font-size:13px; }}
-  .card .k {{ color:#7a8b99; display:inline-block; min-width:92px; }}
-  table.items {{ width:100%; border-collapse:collapse; margin-top:8px; font-size:12.5px; }}
-  table.items thead th {{ background:#0b3c5d; color:#fff; padding:9px 8px; text-align:left;
-                          font-weight:600; font-size:11px; text-transform:uppercase; }}
-  table.items td {{ padding:8px; border-bottom:1px solid #e6edf2; }}
-  table.items tbody tr:nth-child(even) {{ background:#f8fbfd; }}
-  .r {{ text-align:right; }} .c {{ text-align:center; }} .b {{ font-weight:600; }}
-  .code {{ display:inline-block; background:#e3f0f7; color:#0b6e99; font-size:10px;
-          padding:1px 6px; border-radius:4px; font-weight:600; margin-right:4px; }}
-  .maj {{ color:#c0392b; font-size:11px; font-weight:600; }}
-  .totals {{ margin-top:18px; margin-left:auto; width:340px; }}
-  .totals table {{ width:100%; border-collapse:collapse; font-size:13px; }}
-  .totals td {{ padding:7px 10px; }}
-  .totals .lbl {{ color:#5a6b7a; }} .totals .val {{ text-align:right; font-weight:600; }}
-  .totals .grand td {{ background:#0b6e99; color:#fff; font-size:16px; font-weight:700;
-                       border-radius:6px; }}
-  .fz {{ text-align:right; font-size:11px; color:#7a8b99; margin-top:8px; font-style:italic; }}
-  footer {{ margin-top:32px; border-top:1px solid #dce7ef; padding-top:14px; font-size:11px;
-           color:#7a8b99; text-align:center; }}
-  @media print {{ body {{ padding:0; }} .noprint {{ display:none; }} }}
+  * {{ box-sizing:border-box; }}
+  body {{ font-family:'Times New Roman', Georgia, serif; color:#111; margin:0;
+         padding:28px 34px; background:#fff; font-size:12.5px; }}
+  .wrap {{ max-width:960px; margin:0 auto; }}
+  .top {{ display:flex; justify-content:space-between; align-items:flex-start; }}
+  .top img {{ height:56px; }}
+  .page {{ text-align:right; font-weight:bold; font-size:13px; margin-top:18px; }}
+  .headgrid {{ display:flex; gap:16px; margin-top:6px; }}
+  .headgrid > div {{ flex:1; }}
+  table {{ border-collapse:collapse; width:100%; }}
+  .bx td, .bx th {{ border:1px solid #000; padding:3px 6px; vertical-align:top; }}
+  .facture-title {{ text-align:center; font-size:20px; font-weight:bold; border:1px solid #000;
+                    border-bottom:none; padding:4px; }}
+  .lbl {{ font-weight:bold; text-align:center; }}
+  .client {{ border:1px solid #000; min-height:118px; padding:6px 8px; }}
+  .client .name {{ font-size:13.5px; }}
+  .client table td {{ border:1px solid #000; padding:3px 6px; text-align:center; }}
+  .meta {{ margin-top:10px; }}
+  .meta td {{ text-align:center; }}
+  .info {{ margin-top:10px; }}
+  .info td {{ padding:2px 4px; border:none; }}
+  .info .k {{ font-weight:bold; white-space:nowrap; }}
+  .info .val {{ border:1px solid #000; padding:2px 6px; min-width:90px; }}
+  table.items {{ margin-top:12px; }}
+  table.items th {{ border:1px solid #000; padding:5px 6px; font-weight:bold; text-align:center;
+                    background:#f0f0f0; }}
+  table.items td {{ border-left:1px solid #000; border-right:1px solid #000; padding:4px 6px; }}
+  table.items tr:first-child td {{ border-top:none; }}
+  table.items .code {{ font-weight:bold; white-space:nowrap; }}
+  table.items tbody tr:last-child td {{ border-bottom:1px solid #000; }}
+  .r {{ text-align:right; }} .c {{ text-align:center; }}
+  .maj {{ color:#b00; font-weight:bold; }}
+  table.totals {{ margin-top:12px; }}
+  table.totals th {{ border:1px solid #000; background:#f0f0f0; padding:5px; text-align:center; }}
+  table.totals td {{ border:1px solid #000; padding:6px; text-align:right; font-weight:bold; }}
+  .charge {{ font-size:10.5px; margin:4px 0 2px; }}
+  .words {{ text-align:center; margin-top:10px; }}
+  .words b {{ }}
+  .amount-words {{ font-size:16px; }}
+  .reg {{ text-align:center; font-weight:bold; margin-top:4px; }}
+  .pay, .cv {{ text-align:center; margin-top:3px; }}
+  .fz {{ text-align:center; font-size:10.5px; color:#444; margin-top:6px; font-style:italic; }}
+  .company {{ margin-top:26px; border-top:2px solid #000; padding-top:6px; font-size:10px;
+             color:#222; }}
+  @media print {{ body {{ padding:0; }} }}
 </style></head><body><div class="wrap">
-  <header>
-    <div class="brand">
-      <h1>{company.get('name','Nador West Med')}</h1>
-      <p>{company.get('address','Port de Nador West Med, Maroc')}</p>
-      <p>ICE : {company.get('ice','—')} &nbsp;•&nbsp; IF : {company.get('if','—')}</p>
-    </div>
-    <div class="doc">
-      <h2>FACTURE</h2>
-      <p class="num">N° {inv.get('number','')}</p>
-      <p class="meta">Date : {inv.get('date','')}</p>
-      <p class="meta">Échéance : {inv.get('due','')}</p>
-    </div>
-  </header>
 
-  <div class="parties">
-    <div class="card">
-      <h3>Client / Armateur</h3>
-      <p><strong>{inv.get('client_name','—')}</strong></p>
-      <p>{inv.get('client_address','')}</p>
-      <p><span class="k">Réf. escale</span>{c.get('ref','')}</p>
+  <div class="top">
+    <div>{f'<img src="{logo}" alt="NWM">' if logo else f"<b>{company.get('name','')}</b>"}</div>
+    <div style="text-align:right;font-size:10px;color:#666">FAC-NWM</div>
+  </div>
+  <div class="page">Page 1 / 1</div>
+
+  <div class="headgrid">
+    <div>
+      <div class="facture-title">FACTURE</div>
+      <table class="bx"><tr>
+        <td class="lbl">N° Pièce</td><td class="lbl">Date</td><td class="lbl">Code Client</td>
+      </tr><tr>
+        <td class="c">{inv.get('number','')}</td><td class="c">{inv.get('date','')}</td>
+        <td class="c">{inv.get('client_code','')}</td>
+      </tr><tr>
+        <td class="lbl" colspan="2">Numéro du contrat</td><td class="c">{inv.get('contract','')}</td>
+      </tr></table>
     </div>
-    <div class="card">
-      <h3>Navire & Escale</h3>
-      <p><span class="k">Navire</span><strong>{v.get('name','—')}</strong></p>
-      <p><span class="k">IMO / Pavillon</span>{v.get('imo','—')} / {v.get('flag','—')}</p>
-      <p><span class="k">GT / VG</span>{v.get('gt',0):,.0f} / {v.get('vg',0):,.2f} m³</p>
-      {draught_row}
-      <p><span class="k">Terminal</span>{c.get('terminal','—')}</p>
-      <p><span class="k">Poste / Séjour</span>{c.get('berth','—')} • {c.get('sejour_h',0):.0f} h</p>
+    <div class="client">
+      <div class="name"><b>{inv.get('client_name','—')}</b></div>
+      <div>{inv.get('client_address','')}</div>
+      <table style="margin-top:8px"><tr>
+        <td>ICE : {inv.get('client_ice','')}</td>
+        <td>{inv.get('client_city','')}</td>
+        <td>{inv.get('client_country','')}</td>
+      </tr></table>
     </div>
   </div>
+
+  <table class="bx meta"><tr>
+    <td class="lbl">Réf. Commande Client</td><td class="lbl">Date Commande</td>
+    <td class="lbl">Mode Règlement</td><td class="lbl">Échéance</td><td class="lbl">Devise</td>
+  </tr><tr>
+    <td>{inv.get('po','')}</td><td>{inv.get('order_date','')}</td>
+    <td>{company.get('conditions','30J')}</td><td>{inv.get('due','')}</td><td>{currency}</td>
+  </tr></table>
+
+  <table class="info"><tr>
+    <td class="k">Numéro d'escale</td><td class="val">{c.get('ref','')}</td>
+    <td class="k">Longueur hors tout</td><td class="val">{_num(v.get('loa',0))}</td>
+    <td class="k">Date / H d'entrée du port</td><td class="val">{c.get('eta','')}</td>
+  </tr><tr>
+    <td class="k">Nom du navire</td><td class="val">{v.get('name','')}</td>
+    <td class="k">Gross Tonnage</td><td class="val">{v.get('gt',0):.0f}</td>
+    <td class="k">Date / H de sortie du port</td><td class="val">{c.get('etd','')}</td>
+  </tr><tr>
+    <td class="k">Référence PO</td><td class="val">{inv.get('po','')}</td>
+    <td class="k">Volume Taxable</td><td class="val">{_num(v.get('vg',0))}</td>
+    <td class="k">Postes Occupés</td><td class="val">{c.get('berth','')}</td>
+  </tr><tr>
+    <td class="k">Largeur</td><td class="val">{_num(v.get('beam',0))}</td>
+    <td class="k">Tirant d'eau</td><td class="val">{_num(v.get('draught_used',0))}</td>
+    <td class="k">Terminal Arrivé</td><td class="val">{c.get('terminal','')}</td>
+  </tr></table>
 
   <table class="items">
     <thead><tr>
-      <th style="width:32px">#</th><th>Désignation</th><th class="r">Qté</th>
-      <th class="c">Unité</th><th class="r">P.U.</th><th class="r">Montant</th>
+      <th>Code</th><th>Nature</th><th>Unité</th><th>Quantité</th>
+      <th>Tarif&nbsp;Unitaire</th><th>Ristourne</th><th>Montant&nbsp;H.T</th>
     </tr></thead>
-    <tbody>{rows}</tbody>
+    <tbody>{body_rows}</tbody>
   </table>
 
-  <div class="totals"><table>
-    <tr class="grand"><td>TOTAL À PAYER</td><td class="r">{_fmt(tot['total_ht'], currency)}</td></tr>
-    {fx_block}
-  </table>
-  <p class="fz">Exonéré de TVA — Zone Franche (art. régime de zone franche).</p>
+  <table class="totals"><tr>
+    <th style="width:40%">Total HT</th><th style="width:12%">TR</th>
+    <th style="width:20%">Montant TR</th><th style="width:28%">Montant TTC</th>
+  </tr><tr>
+    <td>{_num(total_ht)}</td><td class="c">0 %</td><td></td><td>{_num(ttc)}</td>
+  </tr></table>
+
+  <div class="charge">{company.get('footer','Les frais et commissions sont à la charge du client.')}</div>
+  <div class="words"><b>Arrêté la présente facture à la somme :</b>
+    <span class="amount-words">{montant_en_lettres(total_ht, currency)}</span></div>
+  <div class="reg">En votre aimable règlement, par virement au compte {company.get('bank','')}</div>
+  <div class="reg">{rib_line}</div>
+  {multi_line}
+  {mad_line}
+  <div class="fz">Zone Franche — montants exonérés de TVA.</div>
+
+  <div class="company">
+    <b>{company.get('name','')} — {company.get('legal','')}</b><br>
+    R.C : {company.get('rc','')} &nbsp;|&nbsp; I.F : {company.get('if','')} &nbsp;|&nbsp;
+    I.C.E : {company.get('ice','')}<br>
+    {company.get('address','')}{foot_contact}
   </div>
-
-  <footer>
-    {company.get('name','Nador West Med')} — {company.get('footer','Merci pour votre confiance. Règlement à 30 jours par virement bancaire.')}<br>
-    Facture générée par le Simulateur d'Escales NWM le {datetime.now():%d/%m/%Y à %H:%M}.
-  </footer>
 </div></body></html>"""
+
