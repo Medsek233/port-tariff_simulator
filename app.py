@@ -73,11 +73,15 @@ def _seed_vessels() -> list[dict]:
 
 
 _DEFAULT_COMPANY = {
-    "name": "Nador West Med — Autorité Portuaire",
-    "address": "Port de Nador West Med, Betoya, Maroc",
-    "ice": "0027 5896 000 084", "if": "5289 3410",
-    "footer": "Règlement à 30 jours par virement bancaire. Zone Franche — "
-              "montants exonérés de TVA.",
+    "name": "Nador West Med Port Authority",
+    "legal": "Société Anonyme — Capital social : 5 491 000 000 DH",
+    "rc": "Nador 9387", "if": "40146682", "ice": "001597527000052",
+    "address": "Zone Franche Betoya, 62000 Nador — Maroc",
+    "tel": "", "web": "",
+    "bank": "ATTIJARIWAFA BANK — Centre d'affaire Tanger Souriyenne",
+    "rib": "007640000090500001426720", "swift": "",
+    "multicanal": "Fatourati NWM", "conditions": "30J",
+    "footer": "Les frais et commissions sont à la charge du client.",
 }
 
 
@@ -232,6 +236,16 @@ with st.sidebar:
     c1, c2 = st.columns(2)
     SS.company["ice"] = c1.text_input("ICE", SS.company["ice"])
     SS.company["if"] = c2.text_input("IF", SS.company["if"])
+    with st.expander("Mentions légales & banque"):
+        SS.company["legal"] = st.text_input("Forme / capital", SS.company.get("legal", ""))
+        SS.company["rc"] = st.text_input("R.C", SS.company.get("rc", ""))
+        SS.company["bank"] = st.text_input("Banque", SS.company.get("bank", ""))
+        SS.company["rib"] = st.text_input("RIB", SS.company.get("rib", ""))
+        SS.company["swift"] = st.text_input("SWIFT", SS.company.get("swift", ""))
+        SS.company["multicanal"] = st.text_input("Paiement multicanal",
+                                                 SS.company.get("multicanal", ""))
+        SS.company["conditions"] = st.text_input("Conditions de règlement",
+                                                 SS.company.get("conditions", "30J"))
 
     st.divider()
     st.header("💱 Devise")
@@ -848,6 +862,14 @@ with tab_invoice:
         inv_date = c1.date_input("Date de facture", value=date.today())
         due_days = c2.number_input("Échéance (jours)", 0, 120, 30)
         prefix = c3.text_input("Préfixe n° facture", "NWM")
+        d1, d2, d3 = st.columns(3)
+        client_code = d1.text_input("Code client", "")
+        po_ref = d2.text_input("Référence PO / commande", "")
+        contract = d3.text_input("N° de contrat", "")
+        e1, e2, e3 = st.columns(3)
+        client_ice = e1.text_input("ICE client", "")
+        client_city = e2.text_input("Ville client", "Casablanca")
+        client_country = e3.text_input("Pays client", "Maroc")
 
         if st.button("🧾 Générer la facture", type="primary"):
             number = billing.next_invoice_number(SS.inv_seq, prefix)
@@ -857,6 +879,9 @@ with tab_invoice:
                 "date": inv_date.strftime("%d/%m/%Y"),
                 "due": (inv_date + timedelta(days=int(due_days))).strftime("%d/%m/%Y"),
                 "client_name": call["client_name"], "client_address": call["client_address"],
+                "client_code": client_code, "client_ice": client_ice,
+                "client_city": client_city, "client_country": client_country,
+                "po": po_ref, "contract": contract,
                 "vessel": {**v, "vg": vessel_vg(v),
                            "draught_used": call.get("draught_used"),
                            "draught_declared": call.get("draught_declared"),
