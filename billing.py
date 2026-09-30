@@ -615,3 +615,290 @@ def render_invoice_html(inv: dict, company: dict, currency: str = "EUR",
   </div>
 </div></body></html>"""
 
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  RENDU PDF DE LA FACTURE (reportlab) — A4 portrait, pied de page en bas
+# ═══════════════════════════════════════════════════════════════════════════════
+def _s(v) -> str:
+    """Nettoie le texte pour les polices standard PDF (WinAnsi) : remplace les
+    caractères hors jeu (flèches, tirets longs, etc.) et garde les accents latins."""
+    if v is None:
+        return ""
+    s = str(v)
+    repl = {"→": ">", "←": "<", "↔": "<>", "–": "-", "—": "-",
+            "•": "-", "√": "sqrt", "≈": "~", "²": "2", "³": "3",
+            "…": "...", " ": " ", "’": "'", "‘": "'",
+            "“": '"', "”": '"', "×": "x"}
+    for a, b in repl.items():
+        s = s.replace(a, b)
+    try:
+        s.encode("latin-1")
+    except UnicodeEncodeError:
+        s = s.encode("latin-1", "replace").decode("latin-1")
+    return s
+
+
+def render_invoice_pdf(inv: dict, company: dict, currency: str = "EUR",
+                       fx_mad: float | None = None) -> bytes:
+    """Génère la facture en PDF (A4 portrait) avec reportlab.
+
+    Le pied de page légal (double filet + mentions NWM) est dessiné au bas de la
+    page, sur toute la largeur, quelle que soit la longueur de la facture.
+    """
+    import io as _io
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.units import mm
+    from reportlab.lib import colors
+    from reportlab.lib.enums import TA_CENTER, TA_RIGHT, TA_LEFT
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.platypus import (SimpleDocTemplate, Table, TableStyle, Paragraph,
+                                    Spacer, Image)
+
+    lines = inv.get("lines", [])
+    tot = invoice_totals(lines)
+    total_ht = tot["total_ht"]
+    v = inv.get("vessel", {})
+    c = inv.get("call", {})
+
+    PAGE_W, PAGE_H = A4
+    L = 12 * mm
+    U = PAGE_W - 2 * L                       # largeur utile
+    GREY = colors.HexColor("#ebedf0")
+    BLACK = colors.HexColor("#111111")
+    RED = colors.HexColor("#b00020")
+
+    def P(txt, font="Times-Roman", size=9, align=TA_LEFT, bold=False, color=BLACK,
+          leading=None):
+        st = ParagraphStyle("x", fontName=("Times-Bold" if bold else font), fontSize=size,
+                            leading=leading or size + 1.5, alignment=align, textColor=color)
+        return Paragraph(_s(txt), st)
+
+    story = []
+
+    # --- Bandeau logo + Page 1/1 ---
+    logo_path = os.path.join(os.path.dirname(__file__), "assets", "nwm_logo.png")
+    logo_cell = ""
+    if os.path.exists(logo_path):
+        img = Image(logo_path, width=34 * mm, height=34 * mm * 322 / 630)
+        img.hAlign = "LEFT"
+        logo_cell = img
+    head = Table([[logo_cell, P("SUP_FAC_NWM_01", "Helvetica", 8, TA_RIGHT,
+                                color=colors.HexColor("#8a8a8a"))]],
+                 colWidths=[U * 0.6, U * 0.4])
+    head.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"),
+                              ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                              ("RIGHTPADDING", (0, 0), (-1, -1), 0)]))
+    story.append(head)
+    story.append(Spacer(1, 10))
+    story.append(P("Page 1 / 1", "Times-Bold", 10, TA_RIGHT))
+    story.append(Spacer(1, 4))
+
+    # --- En-tête : bloc FACTURE + bloc client ---
+    LB = U * 0.47                            # largeur du bloc FACTURE (gauche)
+    fact = Table(
+        [[P("FACTURE", "Times-Bold", 16, TA_CENTER), "", ""],
+         [P("N° Pièce", bold=True, align=TA_CENTER), P("Date", bold=True, align=TA_CENTER),
+          P("Code Client", bold=True, align=TA_CENTER)],
+         [P(inv.get("number", ""), align=TA_CENTER), P(inv.get("date", ""), align=TA_CENTER),
+          P(inv.get("client_code", ""), align=TA_CENTER)],
+         [P("Numéro du contrat", bold=True, align=TA_CENTER), "",
+          P(inv.get("contract", ""), align=TA_CENTER)]],
+        colWidths=[LB * 0.34, LB * 0.33, LB * 0.33],
+        rowHeights=[26, 16, 20, 18])
+    fact.setStyle(TableStyle([
+        ("SPAN", (0, 0), (2, 0)), ("SPAN", (0, 3), (1, 3)),
+        ("BOX", (0, 0), (-1, -1), 0.7, BLACK),
+        ("INNERGRID", (0, 1), (-1, -1), 0.5, BLACK),
+        ("LINEBELOW", (0, 0), (-1, 0), 0.7, BLACK),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+    ]))
+
+    client = Table(
+        [[P(inv.get("client_name", "—"), "Times-Bold", 11)],
+         [P(inv.get("client_address", ""), size=9)],
+         [""],
+         [Table([[P("ICE : " + _s(inv.get("client_ice", "")), size=8.5, align=TA_CENTER),
+                  P(inv.get("client_city", ""), size=8.5, align=TA_CENTER),
+                  P(inv.get("client_country", ""), size=8.5, align=TA_CENTER)]],
+                colWidths=[(U - LB - 6 * mm) * 0.5, (U - LB - 6 * mm) * 0.25,
+                           (U - LB - 6 * mm) * 0.25])]],
+        colWidths=[U - LB - 6 * mm], rowHeights=[18, 16, 22, 24])
+    client.setStyle(TableStyle([
+        ("BOX", (0, 0), (-1, -1), 0.7, BLACK), ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, 2), 6), ("TOPPADDING", (0, 0), (0, 0), 5),
+        ("LEFTPADDING", (0, 3), (0, 3), 0), ("RIGHTPADDING", (0, 3), (0, 3), 0),
+        ("BOTTOMPADDING", (0, 3), (0, 3), 0),
+    ]))
+    # nested ICE table borders
+    client._cellvalues[3][0].setStyle(TableStyle([
+        ("BOX", (0, 0), (-1, -1), 0.6, BLACK), ("INNERGRID", (0, 0), (-1, -1), 0.6, BLACK),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+    ]))
+
+    header_row = Table([[fact, "", client]], colWidths=[LB, 6 * mm, U - LB - 6 * mm])
+    header_row.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"),
+                                    ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                                    ("RIGHTPADDING", (0, 0), (-1, -1), 0)]))
+    story.append(header_row)
+    story.append(Spacer(1, 10))
+
+    # --- Ligne Réf commande / Devise ---
+    meta = Table(
+        [[P("Réf. Commande Client", bold=True, align=TA_CENTER),
+          P("Date Commande", bold=True, align=TA_CENTER),
+          P("Mode Règlement", bold=True, align=TA_CENTER),
+          P("Échéance", bold=True, align=TA_CENTER), P("Devise", bold=True, align=TA_CENTER)],
+         [P(inv.get("po", ""), align=TA_CENTER), P(inv.get("order_date", ""), align=TA_CENTER),
+          P(company.get("conditions", "30J"), align=TA_CENTER),
+          P(inv.get("due", ""), align=TA_CENTER), P(currency, align=TA_CENTER)]],
+        colWidths=[U * 0.28, U * 0.2, U * 0.2, U * 0.18, U * 0.14])
+    meta.setStyle(TableStyle([("GRID", (0, 0), (-1, -1), 0.5, BLACK),
+                              ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                              ("TOPPADDING", (0, 0), (-1, -1), 3),
+                              ("BOTTOMPADDING", (0, 0), (-1, -1), 3)]))
+    story.append(meta)
+    story.append(Spacer(1, 10))
+
+    # --- Grille navire & escale ---
+    def kv(label, value):
+        return (P(label, "Helvetica-Bold", 8.5),
+                Table([[P(_plain(value) if isinstance(value, (int, float)) else value,
+                          "Helvetica", 8.5)]],
+                      colWidths=[U / 3 - 78],
+                      style=[("BOX", (0, 0), (-1, -1), 0.5, BLACK),
+                             ("TOPPADDING", (0, 0), (-1, -1), 2),
+                             ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+                             ("LEFTPADDING", (0, 0), (-1, -1), 4)]))
+
+    def kv_row(a, b, cc):
+        return [kv(*a)[0], kv(*a)[1], kv(*b)[0], kv(*b)[1], kv(*cc)[0], kv(*cc)[1]]
+
+    info = Table([
+        kv_row(("Numéro d'escale", c.get("ref", "")),
+               ("Longueur hors tout", v.get("loa", 0)),
+               ("Date / H d'entrée du port", c.get("eta", ""))),
+        kv_row(("Nom du navire", v.get("name", "")),
+               ("Gross Tonnage", v.get("gt", 0)),
+               ("Date / H de sortie du port", c.get("etd", ""))),
+        kv_row(("Référence PO", inv.get("po", "")),
+               ("Volume Taxable", v.get("vg", 0)),
+               ("Postes Occupés", c.get("berth", ""))),
+        kv_row(("Largeur", v.get("beam", 0)),
+               ("Tirant d'eau", v.get("draught_used", 0)),
+               ("Terminal Arrivé", c.get("terminal", ""))),
+    ], colWidths=[78, U / 3 - 78, 78, U / 3 - 78, 78, U / 3 - 78])
+    info.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                              ("LEFTPADDING", (0, 0), (-1, -1), 2),
+                              ("RIGHTPADDING", (0, 0), (-1, -1), 2),
+                              ("TOPPADDING", (0, 0), (-1, -1), 2.5),
+                              ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5)]))
+    story.append(info)
+    story.append(Spacer(1, 12))
+
+    # --- Tableau des prestations ---
+    data = [[P("Code", bold=True, align=TA_CENTER), P("Nature", bold=True, align=TA_CENTER),
+             P("Unité", bold=True, align=TA_CENTER), P("Quantité", bold=True, align=TA_CENTER),
+             P("Tarif Unitaire", bold=True, align=TA_CENTER),
+             P("Ristourne", bold=True, align=TA_CENTER),
+             P("Montant H.T", bold=True, align=TA_CENTER)]]
+    for l in lines:
+        qte = float(l.get("quantite", 1) or 1)
+        montant = float(l.get("montant_ht", 0) or 0)
+        tarif_u = montant / qte if qte else montant
+        maj = l.get("majoration") or 0
+        nat = _s(l.get("designation", ""))
+        nat_p = (nat + f'  <font color="#b00020"><b>({maj:+.0f} %)</b></font>') if maj else nat
+        data.append([P(l.get("code", ""), bold=True),
+                     P(nat_p),
+                     P(l.get("unite", ""), align=TA_CENTER),
+                     P(_num(qte), align=TA_CENTER),
+                     P(_num(tarif_u), align=TA_RIGHT),
+                     P("", align=TA_RIGHT),
+                     P(_num(montant), align=TA_RIGHT)])
+    for _ in range(max(0, 8 - len(lines))):
+        data.append(["", "", "", "", "", "", ""])
+    cw = [0.09, 0.365, 0.075, 0.085, 0.13, 0.10, 0.155]
+    items = Table(data, colWidths=[U * x for x in cw])
+    items.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), GREY),
+        ("BOX", (0, 0), (-1, -1), 0.7, BLACK),
+        ("LINEBELOW", (0, 0), (-1, 0), 0.7, BLACK),
+        ("LINEAFTER", (0, 0), (-2, -1), 0.5, BLACK),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("TOPPADDING", (0, 0), (-1, -1), 4), ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("LEFTPADDING", (0, 0), (-1, -1), 5), ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+    ]))
+    story.append(items)
+    story.append(Spacer(1, 12))
+
+    # --- Totaux ---
+    totals = Table(
+        [[P("Total HT", bold=True, align=TA_CENTER), P("TR", bold=True, align=TA_CENTER),
+          P("Montant TR", bold=True, align=TA_CENTER),
+          P("Montant TTC", bold=True, align=TA_CENTER)],
+         [P(_num(total_ht), bold=True, align=TA_RIGHT), P("0 %", bold=True, align=TA_CENTER),
+          P("", align=TA_RIGHT), P(_num(total_ht), bold=True, align=TA_RIGHT)]],
+        colWidths=[U * 0.4, U * 0.12, U * 0.2, U * 0.28])
+    totals.setStyle(TableStyle([("GRID", (0, 0), (-1, -1), 0.6, BLACK),
+                                ("BACKGROUND", (0, 0), (-1, 0), GREY),
+                                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                                ("TOPPADDING", (0, 0), (-1, -1), 5),
+                                ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                                ("RIGHTPADDING", (0, 1), (0, 1), 8),
+                                ("RIGHTPADDING", (3, 1), (3, 1), 8)]))
+    story.append(totals)
+    story.append(Spacer(1, 6))
+
+    story.append(P("Les frais et commissions sont à la charge du client.", "Helvetica", 8))
+    story.append(Spacer(1, 8))
+    words = f'<b>Arrêté la présente facture à la somme :</b> <font size="12">{_s(montant_en_lettres(total_ht, currency))}</font>'
+    story.append(P(words, size=11, align=TA_CENTER))
+    story.append(Spacer(1, 3))
+    story.append(P("En votre aimable règlement, par virement au compte " +
+                   _s(company.get("bank", "")), bold=True, align=TA_CENTER))
+    swift = company.get("swift", "")
+    rib = "RIB : " + _s(company.get("rib", "")) + (" - SWIFT : " + _s(swift) if swift else "")
+    story.append(P(rib, bold=True, align=TA_CENTER))
+    if company.get("multicanal"):
+        story.append(P("Paiement multicanal : <b>" + _s(company["multicanal"]) + "</b>",
+                       align=TA_CENTER))
+    if fx_mad and currency == "EUR":
+        story.append(P(f'Contre-valeur : <b>{_num(total_ht*fx_mad)} MAD</b> (taux {fx_mad:.2f})',
+                       align=TA_CENTER))
+    story.append(P("Zone Franche — montants exonérés de TVA.", "Helvetica-Oblique", 8.5,
+                   TA_CENTER, color=colors.HexColor("#555555")))
+
+    # --- Pied de page (dessiné en bas à chaque page) ---
+    def _footer(canvas, doc):
+        canvas.saveState()
+        x0, x1 = L, PAGE_W - L
+        yr = 26 * mm
+        canvas.setStrokeColor(BLACK)
+        canvas.setLineWidth(2.2)
+        canvas.line(x0, yr, x1, yr)
+        canvas.setLineWidth(0.6)
+        canvas.line(x0, yr - 2.4, x1, yr - 2.4)
+        y = yr - 12
+        canvas.setFillColor(BLACK)
+        canvas.setFont("Helvetica-Bold", 8)
+        canvas.drawString(x0, y, _s(f"{company.get('name','')} — {company.get('legal','')}"))
+        canvas.setFont("Helvetica", 7.5)
+        y -= 10
+        canvas.drawString(x0, y, _s(
+            f"R.C : {company.get('rc','')}  -  I.F : {company.get('if','')}  -  "
+            f"I.C.E : {company.get('ice','')}"))
+        y -= 10
+        canvas.drawString(x0, y, _s(company.get("address", "")))
+        extra = "  ".join(x for x in [company.get("tel", ""), company.get("web", "")] if x)
+        if extra:
+            y -= 10
+            canvas.drawString(x0, y, _s(extra))
+        canvas.restoreState()
+
+    buf = _io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4, leftMargin=L, rightMargin=L,
+                            topMargin=12 * mm, bottomMargin=34 * mm,
+                            title=f"Facture {inv.get('number','')}")
+    doc.build(story, onFirstPage=_footer, onLaterPages=_footer)
+    return buf.getvalue()
