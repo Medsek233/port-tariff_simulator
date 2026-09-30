@@ -16,6 +16,7 @@ from __future__ import annotations
 import io
 import json
 import math
+import os
 import uuid
 from datetime import date, datetime, timedelta
 
@@ -35,6 +36,13 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+LOGO_PATH = os.path.join(os.path.dirname(__file__), "assets", "nwm_logo.png")
+if os.path.exists(LOGO_PATH):
+    try:
+        st.logo(LOGO_PATH, size="large")
+    except Exception:
+        pass
 
 st.markdown("""
 <style>
@@ -221,13 +229,18 @@ def catalog_df():
 # ═══════════════════════════════════════════════════════════════════════════════
 #  EN-TÊTE & SIDEBAR
 # ═══════════════════════════════════════════════════════════════════════════════
-st.markdown(
-    "<h1 style='margin-bottom:0'>⚓ Simulateur d'Escales & Facturation Portuaire</h1>"
-    "<p style='color:#5a6b7a;margin-top:4px;font-size:15px'>"
-    "Nador West Med · création d'escales, chiffrage automatique des prestations et "
-    "génération de factures dynamiques</p>",
-    unsafe_allow_html=True,
-)
+_hc1, _hc2 = st.columns([1, 6])
+with _hc1:
+    if os.path.exists(LOGO_PATH):
+        st.image(LOGO_PATH, use_container_width=True)
+with _hc2:
+    st.markdown(
+        "<h1 style='margin-bottom:0'>⚓ Simulateur d'Escales & Facturation Portuaire</h1>"
+        "<p style='color:#5a6b7a;margin-top:4px;font-size:15px'>"
+        "Nador West Med · création d'escales, chiffrage automatique des prestations et "
+        "génération de factures dynamiques</p>",
+        unsafe_allow_html=True,
+    )
 
 with st.sidebar:
     st.header("🏢 Émetteur")
@@ -917,23 +930,39 @@ with tab_invoice:
             with st.expander("👁️ Aperçu de la facture", expanded=True):
                 st.components.v1.html(html, height=780, scrolling=True)
 
+            try:
+                pdf_bytes = billing.render_invoice_pdf(
+                    inv, SS.company, currency=SS.currency,
+                    fx_mad=SS.fx_mad if SS.currency == "EUR" else None,
+                )
+            except Exception as e:  # reportlab manquant, etc.
+                pdf_bytes = None
+                st.warning(f"Génération PDF indisponible ({e}). Installez « reportlab ».")
+
             dl1, dl2 = st.columns(2)
-            dl1.download_button(
-                "⬇️ Télécharger la facture (HTML imprimable → PDF)",
-                html.encode("utf-8"),
-                file_name=f"facture_{inv['number']}.html", mime="text/html",
-                use_container_width=True,
-            )
+            if pdf_bytes:
+                dl1.download_button(
+                    "⬇️ Télécharger la facture (PDF)",
+                    pdf_bytes,
+                    file_name=f"Facture_{inv['number']}.pdf", mime="application/pdf",
+                    use_container_width=True,
+                )
+            else:
+                dl1.download_button(
+                    "⬇️ Télécharger la facture (HTML)",
+                    html.encode("utf-8"),
+                    file_name=f"Facture_{inv['number']}.html", mime="text/html",
+                    use_container_width=True,
+                )
             csv_buf = io.StringIO()
             pd.DataFrame(inv["lines"]).to_csv(csv_buf, index=False)
             dl2.download_button(
                 "⬇️ Exporter les lignes (CSV)",
                 csv_buf.getvalue().encode("utf-8"),
-                file_name=f"facture_{inv['number']}.csv", mime="text/csv",
+                file_name=f"Facture_{inv['number']}.csv", mime="text/csv",
                 use_container_width=True,
             )
-            st.caption("💡 Ouvrez le fichier HTML puis **Ctrl/Cmd + P → Enregistrer en PDF** "
-                       "pour obtenir une facture PDF professionnelle.")
+            st.caption("📄 La facture est générée en **PDF A4 portrait** prêt à l'impression.")
 
     # Historique des factures
     if SS.invoices:
