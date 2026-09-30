@@ -319,9 +319,9 @@ with st.sidebar:
         st.rerun()
 
 
-tab_dash, tab_vessels, tab_catalog, tab_calls, tab_invoice = st.tabs(
+tab_dash, tab_vessels, tab_catalog, tab_calls, tab_invoice, tab_pmis = st.tabs(
     ["📈 Tableau de bord", "🚢 Navires", "📖 Catalogue tarifaire",
-     "🛳️ Escales", "🧾 Factures"]
+     "🛳️ Escales", "🧾 Factures", "🔌 PMIS"]
 )
 
 
@@ -977,6 +977,151 @@ with tab_invoice:
                 "Total": money(t["total_ht"]),
             })
         st.dataframe(pd.DataFrame(hist), hide_index=True, use_container_width=True)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  TAB : PMIS — récupération des visites & factures dynamiques
+# ═══════════════════════════════════════════════════════════════════════════════
+with tab_pmis:
+    st.subheader("🔌 PMIS — escales & factures dynamiques")
+    st.caption("Connexion à PMIS pour récupérer les visites facturables et générer "
+               "les factures automatiquement. Prestations facturées : **droits de port** "
+               "(nautique / port / stationnement) + **pilotage** ; remorqueurs et "
+               "lamanage **exclus**. Pilotage en *annulation* ⇒ majoration +100 %.")
+
+    _SECRETS_EXAMPLE = (
+        "[pmis]\n"
+        'auth_url    = "https://PMIS_IP/pmisAuthServer/api"\n'
+        'backend_url = "https://PMIS_IP/pmisBackend/api"\n'
+        'username    = "mon_utilisateur"   # ou : mail = "user@exemple.ma"\n'
+        'password    = "••••••••"\n'
+        'verify_ssl  = true\n'
+    )
+
+    try:
+        import pmis as _pmis
+    except Exception as _e:
+        _pmis = None
+        st.error(f"Module PMIS indisponible ({_e}). Vérifiez que « requests » est installé.")
+
+    if _pmis is not None:
+        client = _pmis.PMISClient()
+        rep = client.config_report()
+        cc = st.columns(4)
+        cc[0].metric("Auth URL", "✓" if rep["auth_url"] else "—")
+        cc[1].metric("Backend URL", "✓" if rep["backend_url"] else "—")
+        cc[2].metric("Identifiant", "✓" if rep["identifiant"] else "—")
+        cc[3].metric("Mot de passe", "✓" if rep["password"] else "—")
+
+        if not client.configured():
+            st.warning("Connexion PMIS non configurée. Renseignez les **secrets** dans "
+                       "*Settings → Secrets* de l'application Streamlit (ou un fichier "
+                       "`.streamlit/secrets.toml` en local). Aucun secret n'est stocké "
+                       "dans le code.")
+            st.code(_SECRETS_EXAMPLE, language="toml")
+        else:
+            st.markdown("##### 1 · Rechercher des visites")
+            f1, f2, f3 = st.columns(3)
+            eta_after = f1.date_input("ETA après le", value=date.today() - timedelta(days=15),
+                                      key="pmis_eta_after")
+            etd_before = f2.date_input("ETD avant le", value=date.today() + timedelta(days=15),
+                                       key="pmis_etd_before")
+            ship_name = f3.text_input("Nom du navire (optionnel)", key="pmis_ship")
+            g1, g2, g3 = st.columns(3)
+            only_billable = g1.checkbox("Facturables uniquement", value=True)
+            status_lbl = g2.selectbox("Statut", ["Tous"] + list(_pmis.STATUS_LABELS.values()))
+            page_size = g3.number_input("Taille de page", 1, 200, 50)
+
+            if st.button("🔍 Interroger PMIS", type="primary"):
+                params = {"etaAfterDate": eta_after.strftime("%Y-%m-%d"),
+                          "etdBeforeDate": etd_before.strftime("%Y-%m-%d"),
+                          "pageSize": int(page_size)}
+                if ship_name:
+                    params["shipName"] = ship_name
+                if only_billable:
+                    params["billable"] = "true"
+                if status_lbl != "Tous":
+                    inv_map = {v: k for k, v in _pmis.STATUS_LABELS.items()}
+                    params["visitStatus"] = inv_map[status_lbl]
+                try:
+                    with st.spinner("Connexion à PMIS…"):
+                        res = client.get_visits(**params)
+                    SS.pmis_rows = res["rows"]
+                    st.success(f"{len(res['rows'])} visite(s) récupérée(s)"
+                               + (f" sur {res['total']} au total" if res.get("total") else ""))
+                except _pmis.PMISError as e:
+                    st.error(str(e))
+
+            rows = SS.get("pmis_rows", [])
+            if rows:
+                st.markdown("##### 2 · Visites")
+                st.dataframe(pd.DataFrame([_pmis.visit_summary(v) for v in rows]),
+                             hide_index=True, use_container_width=True)
+
+                billables = [v for v in rows if _pmis.is_billable(v)]
+                st.markdown("##### 3 · Générer la facture d'une visite facturable")
+                if not billables:
+                    st.info("Aucune visite facturable (billable = true et billing_status vide) "
+                            "dans les résultats.")
+                else:
+                    opts = {f"{_pmis.visit_summary(v)['business_id']} · "
+                            f"{_pmis.visit_summary(v)['navire']}": v for v in billables}
+                    sel = st.selectbox("Visite facturable", list(opts.keys()))
+                    visit = opts[sel]
+                    call, lines = _pmis.build_call_and_lines(visit, SS.catalog)
+                    tot = billing.invoice_totals(lines)
+                    vi = call["vessel_inline"]
+                    st.markdown(
+                        f"<span class='pill'>{vi['name']}</span>"
+                        f"<span class='pill'>IMO {vi.get('imo','—')}</span>"
+                        f"<span class='pill'>{call['terminal']}</span>"
+                        f"<span class='pill'>VG {call['vg']:,.2f} m³</span>"
+                        f"<span class='pill'>Séjour {call['sejour_h']:.0f} h</span>"
+                        f"<span class='pill ok'>Total {money(tot['total_ht'])}</span>",
+                        unsafe_allow_html=True,
+                    )
+                    st.dataframe(
+                        pd.DataFrame(lines)[["code", "designation", "quantite", "unite",
+                                             "pu", "majoration", "montant_ht"]],
+                        hide_index=True, use_container_width=True)
+
+                    p1, p2, p3 = st.columns(3)
+                    inv_date = p1.date_input("Date de facture", value=date.today(),
+                                             key="pmis_invdate")
+                    due_days = p2.number_input("Échéance (jours)", 0, 120, 30, key="pmis_due")
+                    prefix = p3.text_input("Préfixe n° facture", "NWM", key="pmis_prefix")
+
+                    number = billing.next_invoice_number(SS.inv_seq, prefix)
+                    inv = {
+                        "number": number, "date": inv_date.strftime("%d/%m/%Y"),
+                        "due": (inv_date + timedelta(days=int(due_days))).strftime("%d/%m/%Y"),
+                        "client_name": call["client_name"], "client_address": "",
+                        "client_code": "", "client_ice": "", "client_city": "",
+                        "client_country": "", "po": call["ref"], "contract": "",
+                        "vessel": {**vi, "vg": call["vg"], "draught_used": call["draught_used"],
+                                   "draught_declared": call["draught_declared"],
+                                   "draught_min": call["draught_min"]},
+                        "call": call, "lines": lines,
+                    }
+                    fxm = SS.fx_mad if SS.currency == "EUR" else None
+                    html = billing.render_invoice_html(inv, SS.company, currency=SS.currency,
+                                                       fx_mad=fxm)
+                    with st.expander("👁️ Aperçu de la facture", expanded=True):
+                        st.components.v1.html(html, height=760, scrolling=True)
+
+                    d1, d2 = st.columns(2)
+                    try:
+                        pdfb = billing.render_invoice_pdf(inv, SS.company,
+                                                          currency=SS.currency, fx_mad=fxm)
+                        d1.download_button("⬇️ Télécharger la facture (PDF)", pdfb,
+                                           file_name=f"Facture_{number}.pdf",
+                                           mime="application/pdf", use_container_width=True)
+                    except Exception as e:
+                        d1.warning(f"PDF indisponible ({e})")
+                    if d2.button("💾 Enregistrer dans l'historique", use_container_width=True):
+                        SS.inv_seq += 1
+                        SS.invoices.append(inv)
+                        st.success(f"Facture {number} enregistrée (visite PMIS {call['ref']}).")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

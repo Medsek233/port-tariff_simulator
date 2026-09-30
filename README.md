@@ -118,12 +118,47 @@ git push -u origin claude/port-tariffs-invoices-streamlit-e8m0p6
 
 ---
 
+## 🔌 Connexion PMIS (factures dynamiques)
+
+L'onglet **🔌 PMIS** connecte l'application au *Port Management Information System* pour
+récupérer les **visites facturables** et générer les factures automatiquement.
+
+- Authentification par **token** (`/pmisAuthServer/api/login` + `/refresh`, Bearer).
+- Récupération des visites (`/pmisBackend/api/visits`) avec filtres (ETA/ETD, navire,
+  statut, `billable`, pagination).
+- Chaque visite facturable → facture : **droits de port** (nautique / port /
+  stationnement, VG basé sur `max_static_draught_full_load`) + **pilotage** par mouvement
+  (annulation ⇒ **+100 %**). **Remorqueurs et lamanage exclus.** Terminal déduit du nom du
+  poste (préfixe : TCE/TCO → Conteneurs, TRV → Roulier, PP → Hydrocarbures, TGL → GAZ,
+  TMD/TVS → MD).
+
+### 🔐 Secrets (jamais dans le code / GitHub)
+
+Renseignez les paramètres PMIS dans les **secrets de l'application** :
+
+- **Streamlit Cloud** : *Manage app → Settings → Secrets*, au format de
+  `.streamlit/secrets.toml.example`.
+- **En local** : copiez `.streamlit/secrets.toml.example` en `.streamlit/secrets.toml`
+  (ignoré par git), ou utilisez un `.env` (voir `.env.example`).
+
+```toml
+[pmis]
+auth_url    = "https://PMIS_IP/pmisAuthServer/api"
+backend_url = "https://PMIS_IP/pmisBackend/api"
+username    = "…"   # ou mail = "…"
+password    = "…"
+verify_ssl  = true
+```
+
+---
+
 ## 📁 Structure
 
 ```
 port-tariff_simulator/
 ├── app.py                  # 🧾 Application principale — escales & facturation
 ├── billing.py              # Moteur de tarification & génération de factures
+├── pmis.py                 # Connecteur PMIS (auth token + visites → factures)
 ├── storage.py              # Persistance des données (SQLite)
 ├── tarifs_data.py          # Données tarifaires (NWM Avril 2025, TM, Algeciras)
 ├── comparateur_tm_nwm.py   # 📊 Comparateur de tarifs (application secondaire)
