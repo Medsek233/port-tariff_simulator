@@ -761,47 +761,55 @@ def render_invoice_pdf(inv: dict, company: dict, currency: str = "EUR",
     story.append(Spacer(1, 10))
 
     # --- Grille navire & escale ---
-    def kv(label, value):
-        return (P(label, "Helvetica-Bold", 8.5),
-                Table([[P(_plain(value) if isinstance(value, (int, float)) else value,
-                          "Helvetica", 8.5)]],
-                      colWidths=[U / 3 - 78],
-                      style=[("BOX", (0, 0), (-1, -1), 0.5, BLACK),
-                             ("TOPPADDING", (0, 0), (-1, -1), 2),
-                             ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
-                             ("LEFTPADDING", (0, 0), (-1, -1), 4)]))
+    LW1, VW1, LW2, VW2, LW3, VW3 = (0.13 * U, 0.16 * U, 0.165 * U, 0.105 * U,
+                                    0.215 * U, 0.225 * U)
 
-    def kv_row(a, b, cc):
-        return [kv(*a)[0], kv(*a)[1], kv(*b)[0], kv(*b)[1], kv(*cc)[0], kv(*cc)[1]]
+    def _lab(t):
+        return P(t, "Helvetica-Bold", 8)
+
+    def _valcell(value, w):
+        txt = _plain(value) if isinstance(value, (int, float)) else value
+        return Table([[P(txt, "Helvetica", 8)]], colWidths=[w - 4],
+                     style=[("BOX", (0, 0), (-1, -1), 0.5, BLACK),
+                            ("TOPPADDING", (0, 0), (-1, -1), 1.5),
+                            ("BOTTOMPADDING", (0, 0), (-1, -1), 1.5),
+                            ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                            ("RIGHTPADDING", (0, 0), (-1, -1), 2)])
+
+    def _irow(a, b, cc):
+        return [_lab(a[0]), _valcell(a[1], VW1), _lab(b[0]), _valcell(b[1], VW2),
+                _lab(cc[0]), _valcell(cc[1], VW3)]
 
     info = Table([
-        kv_row(("Numéro d'escale", c.get("ref", "")),
-               ("Longueur hors tout", v.get("loa", 0)),
-               ("Date / H d'entrée du port", c.get("eta", ""))),
-        kv_row(("Nom du navire", v.get("name", "")),
-               ("Gross Tonnage", v.get("gt", 0)),
-               ("Date / H de sortie du port", c.get("etd", ""))),
-        kv_row(("Référence PO", inv.get("po", "")),
-               ("Volume Taxable", v.get("vg", 0)),
-               ("Postes Occupés", c.get("berth", ""))),
-        kv_row(("Largeur", v.get("beam", 0)),
-               ("Tirant d'eau", v.get("draught_used", 0)),
-               ("Terminal Arrivé", c.get("terminal", ""))),
-    ], colWidths=[78, U / 3 - 78, 78, U / 3 - 78, 78, U / 3 - 78])
+        _irow(("Numéro d'escale", c.get("ref", "")),
+              ("Longueur hors tout", v.get("loa", 0)),
+              ("Date / H d'entrée du port", c.get("eta", ""))),
+        _irow(("Nom du navire", v.get("name", "")),
+              ("Gross Tonnage", v.get("gt", 0)),
+              ("Date / H de sortie du port", c.get("etd", ""))),
+        _irow(("Référence PO", inv.get("po", "")),
+              ("Volume Taxable", v.get("vg", 0)),
+              ("Postes Occupés", c.get("berth", ""))),
+        _irow(("Largeur", v.get("beam", 0)),
+              ("Tirant d'eau", v.get("draught_used", 0)),
+              ("Terminal Arrivé", c.get("terminal", ""))),
+    ], colWidths=[LW1, VW1, LW2, VW2, LW3, VW3], rowHeights=[16, 16, 16, 16])
     info.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
                               ("LEFTPADDING", (0, 0), (-1, -1), 2),
                               ("RIGHTPADDING", (0, 0), (-1, -1), 2),
-                              ("TOPPADDING", (0, 0), (-1, -1), 2.5),
-                              ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5)]))
+                              ("TOPPADDING", (0, 0), (-1, -1), 1),
+                              ("BOTTOMPADDING", (0, 0), (-1, -1), 1)]))
     story.append(info)
     story.append(Spacer(1, 12))
 
     # --- Tableau des prestations ---
-    data = [[P("Code", bold=True, align=TA_CENTER), P("Nature", bold=True, align=TA_CENTER),
-             P("Unité", bold=True, align=TA_CENTER), P("Quantité", bold=True, align=TA_CENTER),
-             P("Tarif Unitaire", bold=True, align=TA_CENTER),
-             P("Ristourne", bold=True, align=TA_CENTER),
-             P("Montant H.T", bold=True, align=TA_CENTER)]]
+    data = [[P("Code", bold=True, size=8.5, align=TA_CENTER),
+             P("Nature", bold=True, size=8.5, align=TA_CENTER),
+             P("Unité", bold=True, size=8.5, align=TA_CENTER),
+             P("Quantité", bold=True, size=8, align=TA_CENTER),
+             P("Tarif Unitaire", bold=True, size=8.5, align=TA_CENTER),
+             P("Ristourne", bold=True, size=8.5, align=TA_CENTER),
+             P("Montant H.T", bold=True, size=8.5, align=TA_CENTER)]]
     for l in lines:
         qte = float(l.get("quantite", 1) or 1)
         montant = float(l.get("montant_ht", 0) or 0)
@@ -809,25 +817,25 @@ def render_invoice_pdf(inv: dict, company: dict, currency: str = "EUR",
         maj = l.get("majoration") or 0
         nat = _s(l.get("designation", ""))
         nat_p = (nat + f'  <font color="#b00020"><b>({maj:+.0f} %)</b></font>') if maj else nat
-        data.append([P(l.get("code", ""), bold=True),
-                     P(nat_p),
-                     P(l.get("unite", ""), align=TA_CENTER),
-                     P(_num(qte), align=TA_CENTER),
-                     P(_num(tarif_u), align=TA_RIGHT),
+        data.append([P(l.get("code", ""), bold=True, size=8),
+                     P(nat_p, size=8.5),
+                     P(l.get("unite", ""), size=8, align=TA_CENTER),
+                     P(_num(qte), size=8.5, align=TA_CENTER),
+                     P(_num(tarif_u), size=8.5, align=TA_RIGHT),
                      P("", align=TA_RIGHT),
-                     P(_num(montant), align=TA_RIGHT)])
+                     P(_num(montant), size=8.5, align=TA_RIGHT)])
     for _ in range(max(0, 8 - len(lines))):
         data.append(["", "", "", "", "", "", ""])
-    cw = [0.09, 0.365, 0.075, 0.085, 0.13, 0.10, 0.155]
+    cw = [0.085, 0.335, 0.105, 0.09, 0.125, 0.09, 0.17]
     items = Table(data, colWidths=[U * x for x in cw])
     items.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), GREY),
         ("BOX", (0, 0), (-1, -1), 0.7, BLACK),
         ("LINEBELOW", (0, 0), (-1, 0), 0.7, BLACK),
         ("LINEAFTER", (0, 0), (-2, -1), 0.5, BLACK),
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("TOPPADDING", (0, 0), (-1, -1), 4), ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-        ("LEFTPADDING", (0, 0), (-1, -1), 5), ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING", (0, 0), (-1, -1), 4.5), ("BOTTOMPADDING", (0, 0), (-1, -1), 4.5),
+        ("LEFTPADDING", (0, 0), (-1, -1), 3.5), ("RIGHTPADDING", (0, 0), (-1, -1), 3.5),
     ]))
     story.append(items)
     story.append(Spacer(1, 12))
