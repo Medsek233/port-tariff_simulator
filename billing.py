@@ -313,6 +313,18 @@ def _fmt(v, cur="EUR") -> str:
     return f"{_num(v)} {cur}"
 
 
+def _plain(v) -> str:
+    """Nombre « brut » façon Tanger Med : point décimal, sans séparateur de milliers,
+    sans zéros inutiles (249.9, 44, 164274.26, 14.94)."""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return "" if v is None else str(v)
+    if f == int(f):
+        return str(int(f))
+    return f"{f:.2f}".rstrip("0").rstrip(".")
+
+
 @functools.lru_cache(maxsize=1)
 def _logo_data_uri() -> str:
     """Logo NWM encodé en data URI (embarqué dans la facture autonome)."""
@@ -447,56 +459,72 @@ def render_invoice_html(inv: dict, company: dict, currency: str = "EUR",
     return f"""<!doctype html><html lang="fr"><head><meta charset="utf-8">
 <title>Facture {inv.get('number','')}</title>
 <style>
+  @page {{ size:A4 portrait; margin:11mm 12mm; }}
   * {{ box-sizing:border-box; }}
-  body {{ font-family:'Times New Roman', Georgia, serif; color:#111; margin:0;
-         padding:28px 34px; background:#fff; font-size:12.5px; }}
-  .wrap {{ max-width:960px; margin:0 auto; }}
+  body {{ font-family:'Times New Roman', Georgia, serif; color:#1a1a1a; margin:0;
+         padding:24px 26px; background:#fff; font-size:11px; line-height:1.3; }}
+  .wrap {{ width:100%; max-width:190mm; margin:0 auto; min-height:273mm;
+          display:flex; flex-direction:column; }}
   .top {{ display:flex; justify-content:space-between; align-items:flex-start; }}
-  .top img {{ height:56px; }}
-  .page {{ text-align:right; font-weight:bold; font-size:13px; margin-top:18px; }}
-  .headgrid {{ display:flex; gap:16px; margin-top:6px; }}
-  .headgrid > div {{ flex:1; }}
+  .top img {{ height:60px; }}
+  .formcode {{ font-family:Arial, sans-serif; font-size:9.5px; color:#8a8a8a;
+              letter-spacing:.5px; }}
+  .page {{ text-align:right; font-weight:bold; font-size:13px; margin-top:16px;
+          margin-bottom:6px; }}
   table {{ border-collapse:collapse; width:100%; }}
-  .bx td, .bx th {{ border:1px solid #000; padding:3px 6px; vertical-align:top; }}
-  .facture-title {{ text-align:center; font-size:20px; font-weight:bold; border:1px solid #000;
-                    border-bottom:none; padding:4px; }}
+  .headgrid {{ display:flex; gap:18px; align-items:stretch; }}
+  .headgrid > div {{ flex:1; display:flex; flex-direction:column; }}
+  .bx td, .bx th {{ border:1px solid #111; padding:4px 7px; vertical-align:top; }}
+  .facture-title {{ text-align:center; font-size:21px; font-weight:bold; letter-spacing:1px;
+                    border:1px solid #111; border-bottom:none; padding:6px; }}
   .lbl {{ font-weight:bold; text-align:center; }}
-  .client {{ border:1px solid #000; min-height:118px; padding:6px 8px; }}
-  .client .name {{ font-size:13.5px; }}
-  .client table td {{ border:1px solid #000; padding:3px 6px; text-align:center; }}
-  .meta {{ margin-top:10px; }}
+  .client {{ border:1px solid #111; flex:1; display:flex; flex-direction:column;
+            padding:8px 10px; }}
+  .client .name {{ font-size:14px; font-weight:bold; }}
+  .client .addr {{ margin-top:2px; }}
+  .client .icebox {{ margin-top:auto; }}
+  .client .icebox table td {{ border:1px solid #111; padding:4px 7px; text-align:center; }}
+  .meta {{ margin-top:12px; }}
   .meta td {{ text-align:center; }}
-  .info {{ margin-top:10px; }}
-  .info td {{ padding:2px 4px; border:none; }}
+  .info {{ margin-top:12px; }}
+  .info td {{ padding:3px 5px; border:none; }}
   .info .k {{ font-weight:bold; white-space:nowrap; }}
-  .info .val {{ border:1px solid #000; padding:2px 6px; min-width:90px; }}
-  table.items {{ margin-top:12px; }}
-  table.items th {{ border:1px solid #000; padding:5px 6px; font-weight:bold; text-align:center;
-                    background:#f0f0f0; }}
-  table.items td {{ border-left:1px solid #000; border-right:1px solid #000; padding:4px 6px; }}
-  table.items tr:first-child td {{ border-top:none; }}
+  .info .val {{ border:1px solid #111; padding:3px 7px; min-width:96px; font-family:Arial, sans-serif;
+              font-size:11.5px; }}
+  table.items {{ margin-top:14px; border:1px solid #111; }}
+  table.items th {{ border:1px solid #111; padding:6px 7px; font-weight:bold; text-align:center;
+                    background:#ebedf0; }}
+  table.items td {{ border-left:1px solid #111; border-right:1px solid #111; padding:5px 7px; }}
+  table.items tbody tr:first-child td {{ padding-top:7px; }}
   table.items .code {{ font-weight:bold; white-space:nowrap; }}
-  table.items tbody tr:last-child td {{ border-bottom:1px solid #000; }}
+  table.items tbody tr.empty td {{ height:20px; }}
+  table.items tbody tr:last-child td {{ border-bottom:1px solid #111; }}
   .r {{ text-align:right; }} .c {{ text-align:center; }}
-  .maj {{ color:#b00; font-weight:bold; }}
-  table.totals {{ margin-top:12px; }}
-  table.totals th {{ border:1px solid #000; background:#f0f0f0; padding:5px; text-align:center; }}
-  table.totals td {{ border:1px solid #000; padding:6px; text-align:right; font-weight:bold; }}
-  .charge {{ font-size:10.5px; margin:4px 0 2px; }}
-  .words {{ text-align:center; margin-top:10px; }}
-  .words b {{ }}
-  .amount-words {{ font-size:16px; }}
-  .reg {{ text-align:center; font-weight:bold; margin-top:4px; }}
-  .pay, .cv {{ text-align:center; margin-top:3px; }}
-  .fz {{ text-align:center; font-size:10.5px; color:#444; margin-top:6px; font-style:italic; }}
-  .company {{ margin-top:26px; border-top:2px solid #000; padding-top:6px; font-size:10px;
-             color:#222; }}
+  .maj {{ color:#b00020; font-weight:bold; font-size:11px; }}
+  table.totals {{ margin-top:14px; }}
+  table.totals th {{ border:1px solid #111; background:#ebedf0; padding:6px; text-align:center; }}
+  table.totals td {{ border:1px solid #111; padding:8px 10px; text-align:right; font-weight:bold;
+                    font-size:13px; }}
+  .charge {{ font-family:Arial, sans-serif; font-size:10px; color:#333; margin:6px 0 2px; }}
+  .words {{ text-align:center; margin-top:14px; }}
+  .words b {{ font-size:12.5px; }}
+  .amount-words {{ font-size:14px; }}
+  .reg {{ text-align:center; font-weight:bold; margin-top:5px; }}
+  .pay, .cv {{ text-align:center; margin-top:4px; }}
+  .fz {{ text-align:center; font-family:Arial, sans-serif; font-size:10px; color:#555;
+        margin-top:8px; font-style:italic; }}
+  .rule {{ border-top:2.5px solid #111; height:3px;
+          border-bottom:1px solid #111; }}
+  .pagefoot {{ margin-top:auto; padding-top:26px; }}
+  .company {{ font-family:Arial, Helvetica, sans-serif; font-size:9.5px; color:#222;
+             line-height:1.5; margin-top:6px; }}
+  .company b {{ font-size:10px; }}
   @media print {{ body {{ padding:0; }} }}
 </style></head><body><div class="wrap">
 
   <div class="top">
     <div>{f'<img src="{logo}" alt="NWM">' if logo else f"<b>{company.get('name','')}</b>"}</div>
-    <div style="text-align:right;font-size:10px;color:#666">FAC-NWM</div>
+    <div class="formcode">SUP_FAC_NWM_01</div>
   </div>
   <div class="page">Page 1 / 1</div>
 
@@ -513,13 +541,15 @@ def render_invoice_html(inv: dict, company: dict, currency: str = "EUR",
       </tr></table>
     </div>
     <div class="client">
-      <div class="name"><b>{inv.get('client_name','—')}</b></div>
-      <div>{inv.get('client_address','')}</div>
-      <table style="margin-top:8px"><tr>
-        <td>ICE : {inv.get('client_ice','')}</td>
-        <td>{inv.get('client_city','')}</td>
-        <td>{inv.get('client_country','')}</td>
-      </tr></table>
+      <div class="name">{inv.get('client_name','—')}</div>
+      <div class="addr">{inv.get('client_address','')}</div>
+      <div class="icebox">
+        <table><tr>
+          <td>ICE : {inv.get('client_ice','')}</td>
+          <td>{inv.get('client_city','')}</td>
+          <td>{inv.get('client_country','')}</td>
+        </tr></table>
+      </div>
     </div>
   </div>
 
@@ -533,26 +563,27 @@ def render_invoice_html(inv: dict, company: dict, currency: str = "EUR",
 
   <table class="info"><tr>
     <td class="k">Numéro d'escale</td><td class="val">{c.get('ref','')}</td>
-    <td class="k">Longueur hors tout</td><td class="val">{_num(v.get('loa',0))}</td>
+    <td class="k">Longueur hors tout</td><td class="val">{_plain(v.get('loa',0))}</td>
     <td class="k">Date / H d'entrée du port</td><td class="val">{c.get('eta','')}</td>
   </tr><tr>
     <td class="k">Nom du navire</td><td class="val">{v.get('name','')}</td>
-    <td class="k">Gross Tonnage</td><td class="val">{v.get('gt',0):.0f}</td>
+    <td class="k">Gross Tonnage</td><td class="val">{_plain(v.get('gt',0))}</td>
     <td class="k">Date / H de sortie du port</td><td class="val">{c.get('etd','')}</td>
   </tr><tr>
     <td class="k">Référence PO</td><td class="val">{inv.get('po','')}</td>
-    <td class="k">Volume Taxable</td><td class="val">{_num(v.get('vg',0))}</td>
+    <td class="k">Volume Taxable</td><td class="val">{_plain(v.get('vg',0))}</td>
     <td class="k">Postes Occupés</td><td class="val">{c.get('berth','')}</td>
   </tr><tr>
-    <td class="k">Largeur</td><td class="val">{_num(v.get('beam',0))}</td>
-    <td class="k">Tirant d'eau</td><td class="val">{_num(v.get('draught_used',0))}</td>
+    <td class="k">Largeur</td><td class="val">{_plain(v.get('beam',0))}</td>
+    <td class="k">Tirant d'eau</td><td class="val">{_plain(v.get('draught_used',0))}</td>
     <td class="k">Terminal Arrivé</td><td class="val">{c.get('terminal','')}</td>
   </tr></table>
 
   <table class="items">
     <thead><tr>
-      <th>Code</th><th>Nature</th><th>Unité</th><th>Quantité</th>
-      <th>Tarif&nbsp;Unitaire</th><th>Ristourne</th><th>Montant&nbsp;H.T</th>
+      <th style="width:9%">Code</th><th>Nature</th><th style="width:8%">Unité</th>
+      <th style="width:9%">Quantité</th><th style="width:13%">Tarif&nbsp;Unitaire</th>
+      <th style="width:11%">Ristourne</th><th style="width:15%">Montant&nbsp;H.T</th>
     </tr></thead>
     <tbody>{body_rows}</tbody>
   </table>
@@ -573,11 +604,14 @@ def render_invoice_html(inv: dict, company: dict, currency: str = "EUR",
   {mad_line}
   <div class="fz">Zone Franche — montants exonérés de TVA.</div>
 
-  <div class="company">
-    <b>{company.get('name','')} — {company.get('legal','')}</b><br>
-    R.C : {company.get('rc','')} &nbsp;|&nbsp; I.F : {company.get('if','')} &nbsp;|&nbsp;
-    I.C.E : {company.get('ice','')}<br>
-    {company.get('address','')}{foot_contact}
+  <div class="pagefoot">
+    <div class="rule"></div>
+    <div class="company">
+      <b>{company.get('name','')} — {company.get('legal','')}</b><br>
+      R.C : {company.get('rc','')} &nbsp;-&nbsp; I.F : {company.get('if','')} &nbsp;-&nbsp;
+      I.C.E : {company.get('ice','')}<br>
+      {company.get('address','')}{foot_contact}
+    </div>
   </div>
 </div></body></html>"""
 
