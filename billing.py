@@ -478,8 +478,8 @@ def render_invoice_html(inv: dict, company: dict, currency: str = "EUR",
   .facture-title {{ text-align:center; font-size:21px; font-weight:bold; letter-spacing:1px;
                     border:1px solid #111; border-bottom:none; padding:6px; }}
   .lbl {{ font-weight:bold; text-align:center; }}
-  .client {{ border:1px solid #111; flex:1; display:flex; flex-direction:column;
-            padding:8px 10px; }}
+  .client {{ border:1px solid #111; flex:1; min-height:26mm; display:flex;
+            flex-direction:column; padding:8px 10px; }}
   .client .name {{ font-size:14px; font-weight:bold; }}
   .client .addr {{ margin-top:2px; }}
   .client .icebox {{ margin-top:auto; }}
@@ -641,11 +641,25 @@ def _s(v) -> str:
 
 def render_invoice_pdf(inv: dict, company: dict, currency: str = "EUR",
                        fx_mad: float | None = None) -> bytes:
-    """Génère la facture en PDF (A4 portrait) avec reportlab.
+    """Génère la facture en PDF (A4 portrait).
 
-    Le pied de page légal (double filet + mentions NWM) est dessiné au bas de la
-    page, sur toute la largeur, quelle que soit la longueur de la facture.
+    Rend d'abord via **WeasyPrint** (conversion fidèle du HTML, mise en page
+    identique à l'aperçu, pied de page en bas). Si WeasyPrint n'est pas
+    disponible (bibliothèques système absentes), bascule sur le rendu reportlab.
     """
+    try:
+        import weasyprint  # nécessite les libs système (voir packages.txt)
+        html = render_invoice_html(inv, company, currency=currency, fx_mad=fx_mad)
+        return weasyprint.HTML(string=html,
+                               base_url=os.path.dirname(__file__)).write_pdf()
+    except Exception:
+        return _invoice_pdf_reportlab(inv, company, currency=currency, fx_mad=fx_mad)
+
+
+def _invoice_pdf_reportlab(inv: dict, company: dict, currency: str = "EUR",
+                           fx_mad: float | None = None) -> bytes:
+    """Repli : génère la facture en PDF (A4 portrait) avec reportlab (sans
+    dépendance système). Pied de page légal dessiné au bas de la page."""
     import io as _io
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.units import mm
