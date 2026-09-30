@@ -6,6 +6,7 @@ env/
 .DS_Store
 *.log
 .streamlit/secrets.toml
+.env
 factures_export/
 *.tmp
 # Base de données locale de persistance
