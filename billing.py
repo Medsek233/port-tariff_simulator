@@ -463,7 +463,8 @@ def render_invoice_html(inv: dict, company: dict, currency: str = "EUR",
   * {{ box-sizing:border-box; }}
   body {{ font-family:'Times New Roman', Georgia, serif; color:#1a1a1a; margin:0;
          padding:24px 26px; background:#fff; font-size:11px; line-height:1.3; }}
-  .wrap {{ width:100%; max-width:190mm; margin:0 auto; }}
+  .wrap {{ width:100%; max-width:190mm; margin:0 auto; min-height:273mm;
+          display:flex; flex-direction:column; }}
   .top {{ display:flex; justify-content:space-between; align-items:flex-start; }}
   .top img {{ height:60px; }}
   .formcode {{ font-family:Arial, sans-serif; font-size:9.5px; color:#8a8a8a;
@@ -512,8 +513,9 @@ def render_invoice_html(inv: dict, company: dict, currency: str = "EUR",
   .pay, .cv {{ text-align:center; margin-top:4px; }}
   .fz {{ text-align:center; font-family:Arial, sans-serif; font-size:10px; color:#555;
         margin-top:8px; font-style:italic; }}
-  .rule {{ margin-top:30px; border-top:2.5px solid #111; height:3px;
+  .rule {{ border-top:2.5px solid #111; height:3px;
           border-bottom:1px solid #111; }}
+  .pagefoot {{ margin-top:auto; padding-top:26px; }}
   .company {{ font-family:Arial, Helvetica, sans-serif; font-size:9.5px; color:#222;
              line-height:1.5; margin-top:6px; }}
   .company b {{ font-size:10px; }}
@@ -602,12 +604,14 @@ def render_invoice_html(inv: dict, company: dict, currency: str = "EUR",
   {mad_line}
   <div class="fz">Zone Franche — montants exonérés de TVA.</div>
 
-  <div class="rule"></div>
-  <div class="company">
-    <b>{company.get('name','')} — {company.get('legal','')}</b><br>
-    R.C : {company.get('rc','')} &nbsp;-&nbsp; I.F : {company.get('if','')} &nbsp;-&nbsp;
-    I.C.E : {company.get('ice','')}<br>
-    {company.get('address','')}{foot_contact}
+  <div class="pagefoot">
+    <div class="rule"></div>
+    <div class="company">
+      <b>{company.get('name','')} — {company.get('legal','')}</b><br>
+      R.C : {company.get('rc','')} &nbsp;-&nbsp; I.F : {company.get('if','')} &nbsp;-&nbsp;
+      I.C.E : {company.get('ice','')}<br>
+      {company.get('address','')}{foot_contact}
+    </div>
   </div>
 </div></body></html>"""
 
