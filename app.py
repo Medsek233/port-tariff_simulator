@@ -1012,6 +1012,10 @@ with tab_pmis:
         cc[1].metric("Backend URL", "✓" if rep["backend_url"] else "—")
         cc[2].metric("Identifiant", "✓" if rep["identifiant"] else "—")
         cc[3].metric("Mot de passe", "✓" if rep["password"] else "—")
+        if rep.get("login_endpoint"):
+            st.caption(f"Appels : `POST {rep['login_endpoint']}` · "
+                       f"`GET {rep['visits_endpoint']}`"
+                       + ("" if rep["verify_ssl"] else " · ⚠️ TLS non vérifié"))
 
         if not client.configured():
             st.warning("Connexion PMIS non configurée. Renseignez les **secrets** dans "
