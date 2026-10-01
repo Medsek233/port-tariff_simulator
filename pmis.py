@@ -49,12 +49,26 @@ class PMISError(Exception):
     pass
 
 
+def _clean_base(url, *strip_suffixes) -> str:
+    """Normalise une URL de base : retire les / superflus et les suffixes de
+    endpoint collés par erreur (ex. '.../api/login' → '.../api')."""
+    u = (str(url or "")).strip().rstrip("/")
+    changed = True
+    while changed:
+        changed = False
+        for suf in strip_suffixes:
+            if u.lower().endswith("/" + suf.lower()):
+                u = u[: -(len(suf) + 1)].rstrip("/")
+                changed = True
+    return u
+
+
 class PMISClient:
     """Client minimal pour l'API PMIS (auth token + visites)."""
 
     def __init__(self):
-        self.auth_url = (str(_secret("auth_url", "")) or "").rstrip("/")
-        self.backend_url = (str(_secret("backend_url", "")) or "").rstrip("/")
+        self.auth_url = _clean_base(_secret("auth_url", ""), "login", "refresh")
+        self.backend_url = _clean_base(_secret("backend_url", ""), "visits")
         self.username = _secret("username")
         self.mail = _secret("mail")
         self.password = _secret("password")
@@ -73,6 +87,8 @@ class PMISClient:
             "auth_url": bool(self.auth_url), "backend_url": bool(self.backend_url),
             "identifiant": bool(self.username or self.mail), "password": bool(self.password),
             "verify_ssl": self.verify_ssl,
+            "login_endpoint": (self.auth_url + "/login") if self.auth_url else "",
+            "visits_endpoint": (self.backend_url + "/visits") if self.backend_url else "",
         }
 
     # --- authentification ---
@@ -86,19 +102,32 @@ class PMISClient:
     def login(self):
         if not self.configured():
             raise PMISError("Connexion PMIS non configurée (secrets manquants).")
+        url = self.auth_url + "/login"
         body = {"password": self.password}
         if self.username:
             body["username"] = self.username
         else:
             body["mail"] = self.mail
         try:
-            r = requests.post(self.auth_url + "/login", json=body,
-                              verify=self.verify_ssl, timeout=self.timeout)
+            r = requests.post(url, json=body, verify=self.verify_ssl, timeout=self.timeout)
         except requests.RequestException as e:
-            raise PMISError(f"Échec de connexion au serveur d'authentification : {e}") from e
+            raise PMISError(f"Serveur d'authentification injoignable ({url}) : {e}") from e
+        if r.status_code == 404:
+            raise PMISError(
+                f"Endpoint de login introuvable (HTTP 404) : {url}. "
+                "Vérifiez le secret « auth_url » — il doit pointer sur la base du "
+                "serveur d'auth, p. ex. https://PMIS_IP/pmisAuthServer/api "
+                "(le connecteur ajoute /login).")
+        if r.status_code in (401, 403):
+            raise PMISError(f"Identifiants refusés (HTTP {r.status_code}). "
+                            "Vérifiez username/mail et password.")
         if r.status_code >= 400:
-            raise PMISError(f"Login refusé (HTTP {r.status_code}). Vérifiez les identifiants.")
-        self.access_token, self.refresh_token = self._extract_tokens(r.json())
+            raise PMISError(f"Login en échec (HTTP {r.status_code}) sur {url}. "
+                            f"{(r.text or '')[:200]}")
+        try:
+            self.access_token, self.refresh_token = self._extract_tokens(r.json())
+        except ValueError as e:
+            raise PMISError(f"Réponse de login illisible (pas du JSON) depuis {url}.") from e
         if not self.access_token:
             raise PMISError("Réponse de login sans accessToken.")
         return self.access_token
@@ -133,10 +162,23 @@ class PMISClient:
                 self.refresh()
                 r = requests.get(url, params=q, headers=self._headers(),
                                  verify=self.verify_ssl, timeout=self.timeout)
-            r.raise_for_status()
         except requests.RequestException as e:
-            raise PMISError(f"Échec de récupération des visites : {e}") from e
-        payload = r.json()
+            raise PMISError(f"Serveur PMIS injoignable ({url}) : {e}") from e
+        if r.status_code == 404:
+            raise PMISError(
+                f"Endpoint des visites introuvable (HTTP 404) : {url}. "
+                "Vérifiez le secret « backend_url » (p. ex. "
+                "https://PMIS_IP/pmisBackend/api ; le connecteur ajoute /visits).")
+        if r.status_code in (401, 403):
+            raise PMISError(f"Accès refusé aux visites (HTTP {r.status_code}). "
+                            "Token invalide ou droits insuffisants.")
+        if r.status_code >= 400:
+            raise PMISError(f"Récupération des visites en échec (HTTP {r.status_code}). "
+                            f"{(r.text or '')[:200]}")
+        try:
+            payload = r.json()
+        except ValueError as e:
+            raise PMISError(f"Réponse des visites illisible (pas du JSON) depuis {url}.") from e
         data = payload.get("data", payload)
         return {
             "rows": data.get("rows", []) if isinstance(data, dict) else [],

@@ -167,26 +167,30 @@ def calc_pilotage_tm(volume_m3, mouvement):
 # --- NWM (Avril 2025): formule basée sur le Volume Géométrique V (m³) ---
 # Deux tranches de VG, minimum de perception 261,1 € par opération.
 def calc_pilotage_nwm_entree_sortie(vg):
-    """Pilotage NWM entrée/sortie (€) en fonction du Volume Géométrique V (m³).
-    Tranche 1 (V ≤ 180 000): -175,78 + 0,01033·V
-    Tranche 2 (V > 180 000): -0,4795 + 0,00703·V
-    Minimum de perception: 261,1 €."""
+    """Pilotage NWM entrée/sortie (€), par opération, selon le Volume V (m³).
+    Grille officielle « Tarifs Pilotage NWM » :
+      • V ≤ 42 292            : forfait 261,10
+      • 42 292 < V ≤ 180 000  : 261,10 + 0,01033 × (V − 42 292,35)
+      • V > 180 000           : 1 264,9205 + 0,00703 × (V − 180 000)
+    """
+    if vg <= 42292:
+        return 261.10
     if vg <= 180000:
-        val = -175.78 + 0.01033 * vg
-    else:
-        val = -0.4795 + 0.00703 * vg
-    return max(val, 261.1)
+        return 261.10 + 0.01033 * (vg - 42292.35)
+    return 1264.9205 + 0.00703 * (vg - 180000)
 
 def calc_pilotage_nwm_chg_quai(vg):
-    """Pilotage NWM changement de quai (€) en fonction du Volume Géométrique V (m³).
-    Tranche 1 (V ≤ 180 000): 74,2743 + 0,00483·V
-    Tranche 2 (V > 180 000): -13,426 + 0,00414·V
-    Minimum de perception: 261,1 €."""
+    """Pilotage NWM changement de quai (€), par opération, selon le Volume V (m³).
+    Grille officielle « Tarifs Pilotage NWM » :
+      • V ≤ 38 680            : forfait 261,10
+      • 38 680 < V ≤ 180 000  : 74,2743 + 0,00483 × V
+      • V > 180 000           : 731,774 + 0,00414 × (V − 180 000)
+    """
+    if vg <= 38680:
+        return 261.10
     if vg <= 180000:
-        val = 74.2743 + 0.00483 * vg
-    else:
-        val = -13.426 + 0.00414 * vg
-    return max(val, 261.1)
+        return 74.2743 + 0.00483 * vg
+    return 731.774 + 0.00414 * (vg - 180000)
 
 # NWM majorations: navire désemparé = tarif doublé (×2)
 # NWM exonérations: navires de guerre, pêche marocains, remorqueurs marocains,
