@@ -14,8 +14,15 @@ Règles métier convenues :
 - Services facturés = droits de port (nautique/port/stationnement) + PILOTAGE.
   Les remorqueurs (TOWG) et le lamanage/amarrage (MOOR) sont EXCLUS.
 - Pilotage : activity_type « annulation » ⇒ majoration +100 %.
-- Terminal déduit du nom du poste (préfixe) — mapping éditable côté app.
+- Pilotage : Arrival / Departure ⇒ entrée/sortie ; Internal ⇒ changement de quai
+  entre deux postes (entrée/sortie si depuis / vers la rade).
+- Terminal déduit du nom du poste (préfixe). Escale au mouillage seul (emplacements
+  ANCH / MOUILL / RADE) ⇒ Terminal Marchandises Diverses (TMD).
+- Stationnement découpé en tronçons rade / quai (franchise 24 h, tranches de 24 h,
+  rade 50 % au-delà de 96 h).
 - VG basé sur le tirant « max_static_draught_full_load » du navire.
+- Tous les paramètres de l'escale sont modifiables et des articles (catalogue ou
+  lignes libres) peuvent être ajoutés : la facture est recalculée à chaque fois.
 """
 from __future__ import annotations
 
@@ -285,111 +292,275 @@ def visit_summary(visit: dict) -> dict:
     }
 
 
-def build_call_and_lines(visit: dict, catalog: list[dict],
-                         bill_terminal: str | None = None):
-    """Construit (call, lines) pour une visite PMIS via le moteur de tarification.
+# ═══════════════════════════════════════════════════════════════════════════════
+#  PARAMÈTRES D'ESCALE (éditables) → FACTURE
+# ═══════════════════════════════════════════════════════════════════════════════
+# Une visite PMIS est d'abord convertie en un dict de *paramètres* modifiables
+# (dimensions, tirant, client, itinéraire, pilotage, terminal). La facture est
+# ensuite entièrement recalculée à partir de ces paramètres + des articles ajoutés.
 
-    Services : droits de port (nautique/port/stationnement) + pilotage.
-    Exclut remorqueurs (TOWG) et lamanage/amarrage (MOOR).
+ANCHORAGE_KEYS = ("ANCH", "MOUILL", "RADE")
+ANCHORAGE_TERMINAL = "Terminal Marchandises Div"   # escale au mouillage seul → TMD
+DEFAULT_TERMINAL = "Terminal à Conteneurs"
+
+PILOT_TYPES = {"ES": "Entrée / Sortie", "CQ": "Changement de quai"}
+
+
+def is_anchorage(name) -> bool:
+    """Emplacement de mouillage (rade) : nom contenant ANCH, MOUILL ou RADE."""
+    n = (name or "").upper()
+    return any(k in n for k in ANCHORAGE_KEYS)
+
+
+def leg_terminal(name):
+    """Terminal tarifaire d'un emplacement (None pour la rade ou un poste inconnu)."""
+    if not name or is_anchorage(name):
+        return None
+    return berth_to_terminal(name)
+
+
+def _parse_dt(v):
+    from datetime import datetime
+    if not v:
+        return None
+    try:
+        return datetime.fromisoformat(str(v).replace("Z", "").split(".")[0])
+    except Exception:
+        return None
+
+
+def _iso(d) -> str:
+    return d.strftime("%Y-%m-%dT%H:%M:%S") if d else ""
+
+
+def _loc_name(loc) -> str:
+    return ((loc or {}).get("name") or "").strip()
+
+
+def _movement_time(m):
+    return _parse_dt(m.get("start_dt") or m.get("end_dt") or m.get("etm"))
+
+
+def pilot_type(movement_name: str, loc_from: str, loc_to: str) -> str:
+    """Barème de pilotage d'un mouvement : 'ES' (entrée/sortie) ou 'CQ' (chgt de quai).
+
+    Arrival / Departure → ES. Internal (ou shifting) → CQ entre deux postes à quai ;
+    ES si l'une des extrémités est la rade (entrée depuis / sortie vers le mouillage).
     """
+    n = (movement_name or "").lower()
+    internal = any(k in n for k in ("internal", "shift", "changement"))
+    if not internal:
+        return "ES"
+    if not loc_from or not loc_to or is_anchorage(loc_from) or is_anchorage(loc_to):
+        return "ES"
+    return "CQ"
+
+
+def visit_legs(visit: dict) -> list[dict]:
+    """Découpe le séjour ATA → ATD en tronçons {location, start, end} (ISO) d'après
+    les mouvements PMIS. Le transit d'un mouvement est rattaché à sa destination et
+    le dernier tronçon court jusqu'à l'ATD (séjour total = ATA → ATD)."""
+    movements = sorted((visit.get("movements") or []),
+                       key=lambda m: (_iso(_movement_time(m)) or ""))
+    ata = _parse_dt(visit.get("port_of_call_ata") or visit.get("port_of_call_eta"))
+    atd = _parse_dt(visit.get("port_of_call_atd") or visit.get("port_of_call_etd"))
+    times = [t for t in (_movement_time(m) for m in movements) if t]
+    ata = ata or (min(times) if times else None)
+    atd = atd or (max(times) if times else None)
+    if not ata or not atd or atd <= ata:
+        return []
+
+    legs, cur_loc, cur_start = [], None, ata
+    for m in movements:
+        t = min(max(_movement_time(m) or cur_start, ata), atd)
+        fr, to = _loc_name(m.get("location_from")), _loc_name(m.get("location_to"))
+        if cur_loc is None:
+            if fr and t > cur_start:          # position connue avant le 1er mouvement
+                legs.append({"location": fr, "start": _iso(cur_start), "end": _iso(t)})
+                cur_start = t
+            cur_loc = to or fr or None
+            continue
+        if not to or to == cur_loc:           # départ : le tronçon courant va jusqu'à l'ATD
+            continue
+        if t > cur_start:
+            legs.append({"location": cur_loc, "start": _iso(cur_start), "end": _iso(t)})
+        cur_loc, cur_start = to, max(t, cur_start)
+    legs.append({"location": cur_loc or "", "start": _iso(cur_start), "end": _iso(atd)})
+    return [l for l in legs if l["end"] > l["start"]]
+
+
+def visit_pilotage(visit: dict) -> list[dict]:
+    """Une entrée par service PILO réservé sur un mouvement (TOWG / MOOR exclus)."""
+    movements = sorted((visit.get("movements") or []),
+                       key=lambda m: (_iso(_movement_time(m)) or ""))
+    bookings = {b.get("booking_id"): b for b in (visit.get("resource_bookings") or [])}
+    out = []
+    for m in movements:
+        mname = (m.get("movements_type") or {}).get("movement_type_name", "") or ""
+        fr, to = _loc_name(m.get("location_from")), _loc_name(m.get("location_to"))
+        for bid in (m.get("booking_ids") or []):
+            b = bookings.get(bid) or {}
+            if ((b.get("service_type") or {}).get("imo_code") or "").upper() != "PILO":
+                continue
+            out.append({
+                "mouvement": mname or "Mouvement", "de": fr, "vers": to,
+                "date": _iso(_movement_time(m)),
+                "type": pilot_type(mname, fr, to),
+                "annulation": _pilotage_activity(b) == "annulation",
+                "facturer": True,
+            })
+    return out
+
+
+def visit_params(visit: dict) -> dict:
+    """Paramètres d'escale éditables, initialisés depuis la visite PMIS."""
     ship = visit.get("ship") or {}
-    loa = _f(ship.get("loa"))
-    beam = _f(ship.get("width"))
-    gt = _f(ship.get("gross_tonnage"))
-    draft = _f(ship.get("max_static_draught_full_load"))
+    orgs = visit.get("organizations") or ship.get("organizations") or []
+    return {
+        "visit_id": visit.get("visit_id"),
+        "ref": str(visit.get("business_id") or visit.get("visit_id") or ""),
+        "name": (ship.get("target_name") or "").strip(),
+        "imo": ship.get("imo_number"), "flag": ship.get("home_port"),
+        "loa": _f(ship.get("loa")), "beam": _f(ship.get("width")),
+        "gt": _f(ship.get("gross_tonnage")),
+        "draft": _f(ship.get("max_static_draught_full_load")),
+        "client_name": orgs[0]["name"] if orgs else "",
+        "client_ice": "", "client_address": "",
+        "bill_terminal": None,          # None = automatique (poste / mouillage)
+        "legs": visit_legs(visit),
+        "pilotage": visit_pilotage(visit),
+    }
+
+
+def resolve_terminal(legs: list[dict], bill_terminal=None):
+    """Terminal de facturation → (terminal, mode).
+
+    mode : 'manuel' (choisi), 'poste' (1er poste reconnu), 'mouillage' (escale au
+    mouillage seul → TMD) ou 'défaut' (aucun poste reconnu).
+    """
+    if bill_terminal and bill_terminal in td.DROITS_PORT_NAVIRES_NWM:
+        return bill_terminal, "manuel"
+    for l in legs:
+        t = leg_terminal(l.get("location"))
+        if t:
+            return t, "poste"
+    if legs and all(is_anchorage(l.get("location")) for l in legs):
+        return ANCHORAGE_TERMINAL, "mouillage"
+    return DEFAULT_TERMINAL, "défaut"
+
+
+def extra_line(extra: dict, cat: dict, ctx) -> dict | None:
+    """Ligne d'un article ajouté : article du catalogue (chiffré selon les paramètres
+    de l'escale) ou ligne libre (désignation + prix unitaire saisis)."""
+    qty = _f(extra.get("quantite"), 1.0)
+    maj = _f(extra.get("majoration"), 0.0)
+    if extra.get("kind") == "catalog":
+        it = cat.get(extra.get("code"))
+        return billing.make_line(it, qty, ctx, maj) if it else None
+    des = (extra.get("designation") or "").strip()
+    if not des:
+        return None
+    pu = _f(extra.get("pu"))
+    return {"code": extra.get("code") or "DIV", "designation": des, "quantite": round(qty, 3),
+            "unite": extra.get("unite") or "u", "pu": round(pu, 5), "majoration": maj,
+            "montant_ht": round(qty * pu * (1 + maj / 100.0), 2), "tva": 0.0}
+
+
+def build_from_params(p: dict, catalog: list[dict], extras: list[dict] | None = None):
+    """Construit (call, lines) à partir des paramètres d'escale (éventuellement
+    modifiés) et des articles ajoutés. Tous les montants sont recalculés."""
+    loa, beam, gt, draft = _f(p.get("loa")), _f(p.get("beam")), _f(p.get("gt")), _f(p.get("draft"))
     vg = td.calc_vg(loa, beam, draft) if (loa and beam) else 0.0
     te_min = round(0.14 * math.sqrt(loa * beam), 2) if (loa and beam) else 0.0
     te_decl = round(draft, 2)
     te_used = max(te_decl, te_min)
 
-    orgs = visit.get("organizations") or ship.get("organizations") or []
-    client_name = orgs[0]["name"] if orgs else ""
-
-    movements = sorted((visit.get("movements") or []),
-                       key=lambda m: (m.get("start_dt") or m.get("etm") or ""))
-    bookings = {b.get("booking_id"): b for b in (visit.get("resource_bookings") or [])}
-
-    # Terminal principal : premier poste (non nul) rencontré
-    inferred = None
-    for m in movements:
-        loc = (m.get("location_to") or m.get("location_from") or {}) or {}
-        t = berth_to_terminal(loc.get("name"))
-        if t:
-            inferred = t
-            break
-    term_principal = bill_terminal or inferred or "Terminal à Conteneurs"
+    legs = [l for l in (p.get("legs") or [])
+            if _parse_dt(l.get("start")) and _parse_dt(l.get("end"))
+            and _parse_dt(l["end"]) > _parse_dt(l["start"])]
+    legs.sort(key=lambda l: l["start"])
+    term_principal, term_mode = resolve_terminal(legs, p.get("bill_terminal"))
     pref = term_principal.split()[-1][:3].upper()
-    rade_taux = td.DROITS_PORT_NAVIRES_NWM[term_principal]["stationnement"]
+    rates = td.DROITS_PORT_NAVIRES_NWM
 
-    # Séjour : ATA → ATD (réel) sinon ETA → ETD
-    ata = visit.get("port_of_call_ata") or visit.get("port_of_call_eta")
-    atd = visit.get("port_of_call_atd") or visit.get("port_of_call_etd")
-    sejour_h = _hours_between(ata, atd)
+    ata = _parse_dt(legs[0]["start"]) if legs else None
+    atd = _parse_dt(legs[-1]["end"]) if legs else None
+    stat_legs, rade_h = [], 0.0
+    for l in legs:
+        h = _hours_between(l["start"], l["end"])
+        rade = is_anchorage(l.get("location"))
+        t = term_principal if rade else (leg_terminal(l.get("location")) or term_principal)
+        rade_h += h if rade else 0.0
+        stat_legs.append({"label": l.get("location") or t, "is_rade": rade,
+                          "taux": rates[t]["stationnement"], "dur_h": h})
+    sejour_h = sum(sl["dur_h"] for sl in stat_legs)
     jours = max(1, -(-int(sejour_h) // 24)) if sejour_h else 1
 
     ctx = billing.CallContext(gt=gt, vg=vg, loa=loa, sejour_h=sejour_h, jours=jours,
                               lamanage_h=2.0)
     cat = {it["code"]: it for it in catalog if it.get("active", True)}
-
-    def find(code):
-        return cat.get(code)
-
     lines = []
 
-    # 1) Droits de port navire : nautique + port
-    for p in ("DN", "DP"):
-        it = find(f"{p}-{pref}")
+    # 1) Droits de port navire : nautique + port (terminal de facturation)
+    for pre in ("DN", "DP"):
+        it = cat.get(f"{pre}-{pref}")
         if it:
             lines.append(billing.make_line(it, 1, ctx))
 
-    # 2) Droit de stationnement (un tronçon au terminal principal, ATA→ATD)
-    stat_amount, stat_detail = billing.calc_stationnement_legs(
-        vg, [{"label": term_principal, "is_rade": False, "taux": rade_taux, "dur_h": sejour_h}])
+    # 2) Droit de stationnement : tronçons rade / quai (franchise, tranches, rade 50 %)
+    stat_amount, stat_detail = billing.calc_stationnement_legs(vg, stat_legs)
     if stat_amount > 0:
-        lines.append({
-            "code": "DS", "designation": f"Droit de stationnement ({sejour_h:.0f} h)",
-            "quantite": 1, "unite": "escale", "pu": round(stat_amount, 2),
-            "majoration": 0, "montant_ht": round(stat_amount, 2), "tva": 0.0,
-        })
+        des = f"Droit de stationnement ({sejour_h:.0f} h"
+        des += f", dont {rade_h:.0f} h en rade)" if rade_h else ")"
+        lines.append({"code": f"DS-{pref}", "designation": des, "quantite": 1,
+                      "unite": "escale", "pu": round(stat_amount, 2), "majoration": 0,
+                      "montant_ht": round(stat_amount, 2), "tva": 0.0})
 
-    # 3) Pilotage par mouvement (PILO uniquement ; TOWG/MOOR exclus)
-    berth_chain = []
-    for m in movements:
-        loc = (m.get("location_to") or m.get("location_from") or {}) or {}
-        berth = loc.get("name") or ""
-        if berth:
-            berth_chain.append(berth)
-        mname = (m.get("movements_type") or {}).get("movement_type_name", "") or ""
-        is_shift = any(k in mname.lower() for k in ("shift", "berth", "changement"))
-        pil_code = "PIL-CQ" if is_shift else "PIL-ES"
-        for bid in (m.get("booking_ids") or []):
-            b = bookings.get(bid) or {}
-            st = (b.get("service_type") or {})
-            code = (st.get("imo_code") or "").upper()
-            if code == "PILO" and find(pil_code):
-                maj = 100.0 if _pilotage_activity(b) == "annulation" else 0.0
-                l = billing.make_line(find(pil_code), 1, ctx, maj)
-                suffix = "annulation" if maj else mname
-                l["designation"] = f"{l['designation']} — {mname or 'Mouvement'}"
-                if maj:
-                    l["designation"] += " (annulation)"
-                lines.append(l)
+    # 3) Pilotage : une ligne par service PILO facturé (annulation ⇒ +100 %)
+    for pl in (p.get("pilotage") or []):
+        if not pl.get("facturer", True):
+            continue
+        it = cat.get("PIL-CQ" if pl.get("type") == "CQ" else "PIL-ES")
+        if not it:
+            continue
+        maj = 100.0 if pl.get("annulation") else 0.0
+        l = billing.make_line(it, 1, ctx, maj)
+        l["designation"] = f"{l['designation']} — {pl.get('mouvement') or 'Mouvement'}"
+        if maj:
+            l["designation"] += " (annulation)"
+        lines.append(l)
 
-    emplacements = list(dict.fromkeys(berth_chain)) or [term_principal]
+    # 4) Articles ajoutés (catalogue chiffré selon l'escale, ou lignes libres)
+    for ex in (extras or []):
+        l = extra_line(ex, cat, ctx)
+        if l:
+            lines.append(l)
 
+    berths = list(dict.fromkeys(l["location"] for l in legs if l.get("location")))
     call = {
-        "id": f"pmis-{visit.get('visit_id')}",
-        "ref": str(visit.get("business_id") or visit.get("visit_id") or ""),
+        "id": f"pmis-{p.get('visit_id')}",
+        "ref": p.get("ref", ""),
         "vessel_id": None,
-        "vessel_inline": {"name": (ship.get("target_name") or "").strip(),
-                          "imo": ship.get("imo_number"), "flag": ship.get("home_port"),
-                          "gt": gt, "loa": loa, "beam": beam, "draft": draft},
-        "terminal": term_principal, "berth": " → ".join(emplacements),
-        "eta": _dt_fr(ata), "etd": _dt_fr(atd),
-        "sejour_h": sejour_h, "jours": jours,
+        "vessel_inline": {"name": p.get("name", ""), "imo": p.get("imo"),
+                          "flag": p.get("flag"), "gt": gt, "loa": loa, "beam": beam,
+                          "draft": draft},
+        "terminal": term_principal, "terminal_mode": term_mode,
+        "berth": " → ".join(berths) or term_principal,
+        "eta": ata.strftime("%d/%m/%Y %H:%M") if ata else "",
+        "etd": atd.strftime("%d/%m/%Y %H:%M") if atd else "",
+        "sejour_h": sejour_h, "rade_h": rade_h, "jours": jours,
         "vg": vg, "draught_declared": te_decl, "draught_min": te_min, "draught_used": te_used,
-        "client_name": client_name, "client_address": "",
+        "client_name": p.get("client_name", ""), "client_address": p.get("client_address", ""),
+        "client_ice": p.get("client_ice", ""),
         "stationnement_detail": stat_detail, "source": "PMIS",
         "lines": lines, "status": "Brouillon",
     }
     return call, lines
+
+
+def build_call_and_lines(visit: dict, catalog: list[dict],
+                         bill_terminal: str | None = None, extras: list[dict] | None = None):
+    """Construit (call, lines) pour une visite PMIS (paramètres non modifiés)."""
+    p = visit_params(visit)
+    p["bill_terminal"] = bill_terminal
+    return build_from_params(p, catalog, extras)

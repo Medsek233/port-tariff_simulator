@@ -104,6 +104,7 @@ def init_state():
         ss.calls = persisted.get("calls", [])
         ss.invoices = persisted.get("invoices", [])
         ss.inv_seq = persisted.get("inv_seq", 1)
+        ss.pmis_edits = persisted.get("pmis_edits", {})
         # Fusion avec les valeurs par défaut : garantit la présence de toutes les clés
         # même si un enregistrement antérieur était partiel ou d'un ancien modèle.
         ss.company = {**_DEFAULT_COMPANY, **(persisted.get("company") or {})}
@@ -114,6 +115,8 @@ def init_state():
         ss.currency = "EUR"
     if "fx_mad" not in ss:
         ss.fx_mad = 10.85
+    if "pmis_edits" not in ss:
+        ss.pmis_edits = {}
 
 
 init_state()
@@ -197,6 +200,10 @@ def money(v, cur=None):
 
 def terminals():
     return list(td.DROITS_PORT_NAVIRES_NWM.keys())
+
+
+# Escale au mouillage seul → facturée au Terminal Marchandises Diverses (TMD).
+ANCHORAGE_TERMINAL = "Terminal Marchandises Div"
 
 
 MOVEMENTS = [
@@ -548,8 +555,8 @@ with tab_calls:
                 ["Auto — 1er terminal accosté"] + terminals(),
                 help="Détermine le taux des droits nautique/port et le tarif de "
                      "stationnement en rade. « Auto » = déduit du 1er accostage de "
-                     "l'itinéraire. Pour une escale **au mouillage seul**, choisissez "
-                     "explicitement le terminal ici.")
+                     "l'itinéraire ; une escale **au mouillage seul** est facturée au "
+                     "Terminal Marchandises Diverses (TMD).")
             st.caption("🗺️ Construisez l'itinéraire complet de l'escale ci-dessous "
                        "(mouillage → accostage → shifting → mouillage → départ…). "
                        "Chaque tronçon peut se trouver sur un terminal différent. Le droit "
@@ -651,12 +658,11 @@ with tab_calls:
             else:
                 term_principal = bill_terminal
             if term_principal is None:
-                # Escale au mouillage seul et aucun terminal choisi : on ne peut pas
-                # deviner le taux des droits navire / rade.
-                st.error("Escale **au mouillage seul** : aucun terminal accosté détecté. "
-                         "Choisissez un **terminal de facturation** (section 1) pour "
-                         "appliquer le taux des droits navire et du stationnement en rade.")
-                st.stop()
+                # Escale au mouillage seul : facturée au Terminal Marchandises Diverses.
+                term_principal = ANCHORAGE_TERMINAL
+                st.info("Escale **au mouillage seul** : facturée au **Terminal "
+                        "Marchandises Diverses (TMD)**. Choisissez un autre terminal de "
+                        "facturation (section 1) si nécessaire.")
             pref = term_principal.split()[-1][:3].upper()
             rade_taux = td.DROITS_PORT_NAVIRES_NWM[term_principal]["stationnement"]
 
@@ -982,12 +988,272 @@ with tab_invoice:
 # ═══════════════════════════════════════════════════════════════════════════════
 #  TAB : PMIS — récupération des visites & factures dynamiques
 # ═══════════════════════════════════════════════════════════════════════════════
+def _ts(v):
+    """ISO → Timestamp (NaT si vide) pour les éditeurs de dates."""
+    return pd.to_datetime(v, errors="coerce") if v else pd.NaT
+
+
+def _iso_or_empty(v) -> str:
+    try:
+        return "" if pd.isna(v) else pd.Timestamp(v).strftime("%Y-%m-%dT%H:%M:%S")
+    except Exception:
+        return ""
+
+
+def _records(df: pd.DataFrame) -> list[dict]:
+    return df.astype(object).where(pd.notna(df), None).to_dict("records")
+
+
+def pmis_invoice_editor(_pmis, visit: dict):
+    """Paramètres éditables d'une visite PMIS + articles ajoutés → facture recalculée.
+
+    Les éditeurs sont initialisés une fois par session (instantané stable) ; leurs
+    valeurs courantes sont enregistrées dans SS.pmis_edits[visit_id] (SQLite)."""
+    vid = str(visit.get("visit_id"))
+    base = _pmis.visit_params(visit)
+    ver = SS.setdefault("pmis_ver", {}).get(vid, 0)
+    snap_key = f"pmis_snap_{vid}_{ver}"
+    if snap_key not in SS:
+        saved = SS.pmis_edits.get(vid) or {}
+        SS[snap_key] = {"params": saved.get("params") or base,
+                        "extras": saved.get("extras") or []}
+    snap = SS[snap_key]
+    p0 = snap["params"]
+    k = f"pmis_{vid}_{ver}_"
+    cat_opts = [f"{it['code']} · {it['label']}" for it in SS.catalog if it.get("active", True)]
+
+    st.markdown("##### 4 · Paramètres de l'escale")
+    st.caption("Toute modification recalcule immédiatement la facture. Les modifications "
+               "sont conservées pour cette visite.")
+
+    # --- Navire & tirant
+    n1, n2, n3, n4 = st.columns(4)
+    loa = n1.number_input("LOA (m)", 0.0, 500.0, float(p0["loa"]), 0.1, key=k + "loa")
+    beam = n2.number_input("Largeur (m)", 0.0, 80.0, float(p0["beam"]), 0.1, key=k + "beam")
+    gt = n3.number_input("GT", 0.0, 400000.0, float(p0["gt"]), 100.0, key=k + "gt")
+    draft = n4.number_input("Tirant d'eau déclaré TE (m)", 0.0, 30.0, float(p0["draft"]),
+                            0.1, key=k + "draft")
+
+    # --- Client & terminal
+    c1, c2, c3 = st.columns(3)
+    client_name = c1.text_input("Client / Armateur", p0.get("client_name", ""), key=k + "cli")
+    client_ice = c2.text_input("ICE client", p0.get("client_ice", ""), key=k + "ice")
+    client_addr = c3.text_input("Adresse client", p0.get("client_address", ""), key=k + "addr")
+    term_opts = ["Auto"] + terminals()
+    bt0 = p0.get("bill_terminal")
+    bill_sel = st.selectbox(
+        "Terminal de facturation (droits nautique / port & tarif rade)", term_opts,
+        index=term_opts.index(bt0) if bt0 in term_opts else 0, key=k + "term",
+        help="« Auto » = terminal du 1er poste à quai ; escale au mouillage seul ⇒ "
+             "Terminal Marchandises Diverses (TMD). Chaque poste à quai garde le taux "
+             "de stationnement de son propre terminal.")
+
+    # --- Itinéraire (postes & dates) → stationnement
+    st.markdown("**🗺️ Itinéraire — postes & dates** (séjour ATA → ATD)")
+    st.caption("Un tronçon par emplacement. Le terminal est déduit du nom du poste "
+               "(TCE/TCO, TRV, PP, TGL, TMD/TVS) ; un nom contenant ANCH, MOUILL ou RADE "
+               "est traité comme du mouillage en rade.")
+    legs_df = pd.DataFrame([{"location": l["location"], "start": _ts(l["start"]),
+                             "end": _ts(l["end"])} for l in p0["legs"]],
+                           columns=["location", "start", "end"])
+    legs_df["start"] = pd.to_datetime(legs_df["start"])
+    legs_df["end"] = pd.to_datetime(legs_df["end"])
+    legs_ed = st.data_editor(
+        legs_df, num_rows="dynamic", hide_index=True, use_container_width=True,
+        key=k + "legs",
+        column_config={
+            "location": st.column_config.TextColumn("Poste / emplacement", width="medium"),
+            "start": st.column_config.DatetimeColumn("Début", format="DD/MM/YYYY HH:mm"),
+            "end": st.column_config.DatetimeColumn("Fin", format="DD/MM/YYYY HH:mm"),
+        })
+
+    # --- Pilotage
+    st.markdown("**🧭 Pilotage** (remorquage et amarrage exclus)")
+    pil_df = pd.DataFrame(p0["pilotage"], columns=["mouvement", "de", "vers", "date", "type",
+                                                   "annulation", "facturer"])
+    pil_df["type"] = pil_df["type"].map(lambda t: _pmis.PILOT_TYPES.get(t, t))
+    pil_df["date"] = pd.to_datetime(pil_df["date"].map(_ts))
+    pil_df["annulation"] = pil_df["annulation"].astype(bool)
+    pil_df["facturer"] = pil_df["facturer"].astype(bool)
+    pil_ed = st.data_editor(
+        pil_df, num_rows="dynamic", hide_index=True, use_container_width=True,
+        key=k + "pil",
+        column_config={
+            "mouvement": st.column_config.TextColumn("Mouvement"),
+            "de": st.column_config.TextColumn("De"),
+            "vers": st.column_config.TextColumn("Vers"),
+            "date": st.column_config.DatetimeColumn("Date", format="DD/MM/YYYY HH:mm"),
+            "type": st.column_config.SelectboxColumn(
+                "Barème", options=list(_pmis.PILOT_TYPES.values()), required=True),
+            "annulation": st.column_config.CheckboxColumn("Annulation (+100 %)"),
+            "facturer": st.column_config.CheckboxColumn("Facturer"),
+        })
+
+    # --- Articles ajoutés
+    st.markdown("**➕ Articles supplémentaires**")
+    a1, a2 = st.columns(2)
+    with a1:
+        st.caption("Articles du **catalogue** — chiffrés selon les paramètres de l'escale "
+                   "(VG, GT, LOA, jours…).")
+        ex_cat = [e for e in snap["extras"] if e.get("kind") == "catalog"]
+        lbl = {o.split(" · ")[0]: o for o in cat_opts}
+        cat_df = pd.DataFrame([{"article": lbl.get(e.get("code"), e.get("code")),
+                                "quantite": float(e.get("quantite") or 1),
+                                "majoration": float(e.get("majoration") or 0)} for e in ex_cat],
+                              columns=["article", "quantite", "majoration"])
+        cat_ed = st.data_editor(
+            cat_df, num_rows="dynamic", hide_index=True, use_container_width=True,
+            key=k + "xcat",
+            column_config={
+                "article": st.column_config.SelectboxColumn("Article", options=cat_opts,
+                                                            width="large"),
+                "quantite": st.column_config.NumberColumn("Qté", min_value=0.0, default=1.0,
+                                                          format="%.2f"),
+                "majoration": st.column_config.NumberColumn("Maj %", default=0.0,
+                                                            format="%.0f"),
+            })
+    with a2:
+        st.caption("**Lignes libres** — désignation et prix unitaire saisis.")
+        ex_free = [e for e in snap["extras"] if e.get("kind") == "free"]
+        free_df = pd.DataFrame([{c: e.get(c) for c in
+                                 ("designation", "unite", "quantite", "pu", "majoration")}
+                                for e in ex_free],
+                               columns=["designation", "unite", "quantite", "pu", "majoration"])
+        free_df = free_df.astype({"designation": object, "unite": object, "quantite": float,
+                                  "pu": float, "majoration": float})
+        free_ed = st.data_editor(
+            free_df, num_rows="dynamic", hide_index=True, use_container_width=True,
+            key=k + "xfree",
+            column_config={
+                "designation": st.column_config.TextColumn("Désignation", width="large"),
+                "unite": st.column_config.TextColumn("Unité", default="u"),
+                "quantite": st.column_config.NumberColumn("Qté", min_value=0.0, default=1.0,
+                                                          format="%.2f"),
+                "pu": st.column_config.NumberColumn("P.U.", min_value=0.0, default=0.0,
+                                                    format="%.2f"),
+                "majoration": st.column_config.NumberColumn("Maj %", default=0.0,
+                                                            format="%.0f"),
+            })
+
+    # --- Paramètres courants → recalcul
+    pil_code = {v_: c_ for c_, v_ in _pmis.PILOT_TYPES.items()}
+    params = {
+        **base,
+        "loa": loa, "beam": beam, "gt": gt, "draft": draft,
+        "client_name": client_name, "client_ice": client_ice, "client_address": client_addr,
+        "bill_terminal": None if bill_sel == "Auto" else bill_sel,
+        "legs": [{"location": (r.get("location") or "").strip(),
+                  "start": _iso_or_empty(r.get("start")), "end": _iso_or_empty(r.get("end"))}
+                 for r in _records(legs_ed)],
+        "pilotage": [{"mouvement": r.get("mouvement") or "Mouvement", "de": r.get("de") or "",
+                      "vers": r.get("vers") or "", "date": _iso_or_empty(r.get("date")),
+                      "type": pil_code.get(r.get("type"), "ES"),
+                      "annulation": bool(r.get("annulation")),
+                      "facturer": r.get("facturer") is not False}
+                     for r in _records(pil_ed)],
+    }
+    extras = [{"kind": "catalog", "code": str(r["article"]).split(" · ")[0],
+               "quantite": r.get("quantite") if r.get("quantite") is not None else 1.0,
+               "majoration": r.get("majoration") or 0.0}
+              for r in _records(cat_ed) if r.get("article")]
+    extras += [{"kind": "free", "designation": r.get("designation"),
+                "unite": r.get("unite") or "u",
+                "quantite": r.get("quantite") if r.get("quantite") is not None else 1.0,
+                "pu": r.get("pu") or 0.0, "majoration": r.get("majoration") or 0.0}
+               for r in _records(free_ed) if (r.get("designation") or "").strip()]
+
+    # Mémorise les modifications de cette visite (persistées en SQLite)
+    if params != base or extras:
+        SS.pmis_edits[vid] = {"params": params, "extras": extras}
+    else:
+        SS.pmis_edits.pop(vid, None)
+    if vid in SS.pmis_edits:
+        if st.button("↺ Revenir aux données PMIS", key=k + "reset"):
+            SS.pmis_edits.pop(vid, None)
+            SS.pmis_ver[vid] = ver + 1
+            st.rerun()
+
+    call, lines = _pmis.build_from_params(params, SS.catalog, extras)
+
+    # --- Résultat
+    st.markdown("##### 5 · Facture recalculée")
+    if call["terminal_mode"] == "mouillage":
+        st.info("⚓ Escale **au mouillage seul** : facturée au **Terminal Marchandises "
+                "Diverses (TMD)**.")
+    elif call["terminal_mode"] == "défaut":
+        st.warning("Aucun poste reconnu dans l'itinéraire : terminal par défaut "
+                   f"**{call['terminal']}**. Choisissez le terminal de facturation ou "
+                   "corrigez le nom du poste.")
+    tot = billing.invoice_totals(lines)
+    te_warn = call["draught_used"] > call["draught_declared"]
+    st.markdown(
+        f"<span class='pill'>{call['vessel_inline']['name']}</span>"
+        f"<span class='pill'>{call['terminal']}</span>"
+        f"<span class='pill'>{call['berth']}</span>"
+        f"<span class='pill'>VG {call['vg']:,.2f} m³</span>"
+        f"<span class='pill{' warn' if te_warn else ''}'>TE retenu "
+        f"{call['draught_used']:.2f} m</span>"
+        f"<span class='pill'>Séjour {call['sejour_h']:.1f} h"
+        + (f" (rade {call['rade_h']:.0f} h)" if call["rade_h"] else "") + "</span>"
+        f"<span class='pill ok'>Total {money(tot['total_ht'])}</span>",
+        unsafe_allow_html=True)
+    if te_warn:
+        st.caption(f"⚓ TE déclaré {call['draught_declared']:.2f} m < minimum théorique "
+                   f"0,14·√(L·B) = **{call['draught_min']:.2f} m** → TE retenu pour le VG.")
+    st.dataframe(pd.DataFrame(lines, columns=["code", "designation", "quantite", "unite", "pu",
+                                              "majoration", "montant_ht"]),
+                 hide_index=True, use_container_width=True)
+    if call.get("stationnement_detail"):
+        with st.expander("🅿️ Détail du stationnement par tranche"):
+            sd = pd.DataFrame(call["stationnement_detail"])
+            sd["montant"] = sd["montant"].map(lambda x: money(x))
+            st.dataframe(sd, hide_index=True, use_container_width=True)
+
+    p1, p2, p3 = st.columns(3)
+    inv_date = p1.date_input("Date de facture", value=date.today(), key="pmis_invdate")
+    due_days = p2.number_input("Échéance (jours)", 0, 120, 30, key="pmis_due")
+    prefix = p3.text_input("Préfixe n° facture", "NWM", key="pmis_prefix")
+
+    number = billing.next_invoice_number(SS.inv_seq, prefix)
+    vi = call["vessel_inline"]
+    inv = {
+        "number": number, "date": inv_date.strftime("%d/%m/%Y"),
+        "due": (inv_date + timedelta(days=int(due_days))).strftime("%d/%m/%Y"),
+        "client_name": call["client_name"], "client_address": call["client_address"],
+        "client_code": "", "client_ice": call["client_ice"], "client_city": "",
+        "client_country": "", "po": call["ref"], "contract": "",
+        "vessel": {**vi, "vg": call["vg"], "draught_used": call["draught_used"],
+                   "draught_declared": call["draught_declared"],
+                   "draught_min": call["draught_min"]},
+        "call": call, "lines": lines,
+    }
+    fxm = SS.fx_mad if SS.currency == "EUR" else None
+    html = billing.render_invoice_html(inv, SS.company, currency=SS.currency, fx_mad=fxm)
+    with st.expander("👁️ Aperçu de la facture", expanded=True):
+        st.components.v1.html(html, height=760, scrolling=True)
+
+    d1, d2 = st.columns(2)
+    try:
+        pdfb = billing.render_invoice_pdf(inv, SS.company, currency=SS.currency, fx_mad=fxm)
+        d1.download_button("⬇️ Télécharger la facture (PDF)", pdfb,
+                           file_name=f"Facture_{number}.pdf", mime="application/pdf",
+                           use_container_width=True)
+    except Exception as e:
+        d1.warning(f"PDF indisponible ({e})")
+    if d2.button("💾 Enregistrer dans l'historique", use_container_width=True):
+        SS.inv_seq += 1
+        SS.invoices.append(inv)
+        st.success(f"Facture {number} enregistrée (visite PMIS {call['ref']}).")
+
+
 with tab_pmis:
     st.subheader("🔌 PMIS — escales & factures dynamiques")
     st.caption("Connexion à PMIS pour récupérer les visites facturables et générer "
                "les factures automatiquement. Prestations facturées : **droits de port** "
                "(nautique / port / stationnement) + **pilotage** ; remorqueurs et "
-               "lamanage **exclus**. Pilotage en *annulation* ⇒ majoration +100 %.")
+               "lamanage **exclus**. Pilotage en *annulation* ⇒ majoration +100 %. "
+               "Les paramètres de l'escale (postes, dates, TE, dimensions, client…) sont "
+               "modifiables et des articles peuvent être ajoutés à la facture.")
 
     _SECRETS_EXAMPLE = (
         "[pmis]\n"
@@ -1071,61 +1337,7 @@ with tab_pmis:
                     opts = {f"{_pmis.visit_summary(v)['business_id']} · "
                             f"{_pmis.visit_summary(v)['navire']}": v for v in billables}
                     sel = st.selectbox("Visite facturable", list(opts.keys()))
-                    visit = opts[sel]
-                    call, lines = _pmis.build_call_and_lines(visit, SS.catalog)
-                    tot = billing.invoice_totals(lines)
-                    vi = call["vessel_inline"]
-                    st.markdown(
-                        f"<span class='pill'>{vi['name']}</span>"
-                        f"<span class='pill'>IMO {vi.get('imo','—')}</span>"
-                        f"<span class='pill'>{call['terminal']}</span>"
-                        f"<span class='pill'>VG {call['vg']:,.2f} m³</span>"
-                        f"<span class='pill'>Séjour {call['sejour_h']:.0f} h</span>"
-                        f"<span class='pill ok'>Total {money(tot['total_ht'])}</span>",
-                        unsafe_allow_html=True,
-                    )
-                    st.dataframe(
-                        pd.DataFrame(lines)[["code", "designation", "quantite", "unite",
-                                             "pu", "majoration", "montant_ht"]],
-                        hide_index=True, use_container_width=True)
-
-                    p1, p2, p3 = st.columns(3)
-                    inv_date = p1.date_input("Date de facture", value=date.today(),
-                                             key="pmis_invdate")
-                    due_days = p2.number_input("Échéance (jours)", 0, 120, 30, key="pmis_due")
-                    prefix = p3.text_input("Préfixe n° facture", "NWM", key="pmis_prefix")
-
-                    number = billing.next_invoice_number(SS.inv_seq, prefix)
-                    inv = {
-                        "number": number, "date": inv_date.strftime("%d/%m/%Y"),
-                        "due": (inv_date + timedelta(days=int(due_days))).strftime("%d/%m/%Y"),
-                        "client_name": call["client_name"], "client_address": "",
-                        "client_code": "", "client_ice": "", "client_city": "",
-                        "client_country": "", "po": call["ref"], "contract": "",
-                        "vessel": {**vi, "vg": call["vg"], "draught_used": call["draught_used"],
-                                   "draught_declared": call["draught_declared"],
-                                   "draught_min": call["draught_min"]},
-                        "call": call, "lines": lines,
-                    }
-                    fxm = SS.fx_mad if SS.currency == "EUR" else None
-                    html = billing.render_invoice_html(inv, SS.company, currency=SS.currency,
-                                                       fx_mad=fxm)
-                    with st.expander("👁️ Aperçu de la facture", expanded=True):
-                        st.components.v1.html(html, height=760, scrolling=True)
-
-                    d1, d2 = st.columns(2)
-                    try:
-                        pdfb = billing.render_invoice_pdf(inv, SS.company,
-                                                          currency=SS.currency, fx_mad=fxm)
-                        d1.download_button("⬇️ Télécharger la facture (PDF)", pdfb,
-                                           file_name=f"Facture_{number}.pdf",
-                                           mime="application/pdf", use_container_width=True)
-                    except Exception as e:
-                        d1.warning(f"PDF indisponible ({e})")
-                    if d2.button("💾 Enregistrer dans l'historique", use_container_width=True):
-                        SS.inv_seq += 1
-                        SS.invoices.append(inv)
-                        st.success(f"Facture {number} enregistrée (visite PMIS {call['ref']}).")
+                    pmis_invoice_editor(_pmis, opts[sel])
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

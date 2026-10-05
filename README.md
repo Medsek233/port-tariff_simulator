@@ -131,6 +131,18 @@ récupérer les **visites facturables** et générer les factures automatiquemen
   (annulation ⇒ **+100 %**). **Remorqueurs et lamanage exclus.** Terminal déduit du nom du
   poste (préfixe : TCE/TCO → Conteneurs, TRV → Roulier, PP → Hydrocarbures, TGL → GAZ,
   TMD/TVS → MD).
+- **Escale au mouillage seul** (emplacements contenant ANCH / MOUILL / RADE) ⇒ facturée au
+  **Terminal Marchandises Diverses (TMD)**.
+- **Stationnement rade / quai** : le séjour ATA → ATD est découpé d'après les mouvements
+  (franchise 24 h, tranches de 24 h, règle des 8 h, rade 50 % au-delà de 96 h).
+- **Pilotage** : *Arrival / Departure* ⇒ entrée/sortie ; *Internal* ⇒ changement de quai
+  entre deux postes (entrée/sortie depuis / vers la rade). Barème modifiable par mouvement.
+- **Paramètres modifiables** avant facturation : postes & dates de l'itinéraire, terminal de
+  facturation, TE déclaré, LOA / largeur / GT, client & ICE, mouvements de pilotage
+  (barème, annulation, facturer ou non). La facture est **recalculée** à chaque modification.
+- **Articles supplémentaires** : articles du catalogue (chiffrés selon les paramètres de
+  l'escale) ou lignes libres (désignation + prix unitaire). Les modifications sont
+  conservées par visite (bouton *Revenir aux données PMIS* pour les annuler).
 
 ### 🔐 Secrets (jamais dans le code / GitHub)
 
