@@ -90,6 +90,7 @@ _DEFAULT_COMPANY = {
     "rib": "007640000090500001426720", "swift": "",
     "multicanal": "Fatourati NWM", "conditions": "30J",
     "footer": "Les frais et commissions sont à la charge du client.",
+    "show_mad": False,  # contre-valeur MAD sur les factures (optionnelle)
 }
 
 
@@ -198,6 +199,14 @@ def money(v, cur=None):
         return f"— {cur}"
 
 
+def invoice_fx():
+    """Taux EUR → MAD à imprimer sur la facture, ou None si la contre-valeur MAD est
+    désactivée (option de la barre latérale) ou si la facture n'est pas en EUR."""
+    if SS.currency == "EUR" and SS.company.get("show_mad") and SS.fx_mad:
+        return SS.fx_mad
+    return None
+
+
 def terminals():
     return list(td.DROITS_PORT_NAVIRES_NWM.keys())
 
@@ -270,8 +279,13 @@ with st.sidebar:
     st.divider()
     st.header("💱 Devise")
     SS.currency = st.selectbox("Devise de facturation", ["EUR", "MAD", "USD"], index=0)
-    SS.fx_mad = st.number_input("Taux EUR → MAD (contre-valeur)", value=float(SS.fx_mad),
-                                step=0.05, format="%.2f")
+    SS.company["show_mad"] = st.checkbox(
+        "Afficher la contre-valeur en MAD sur les factures",
+        value=bool(SS.company.get("show_mad", False)),
+        help="Optionnel : ajoute sous le total la contre-valeur en dirhams (taux ci-dessous).")
+    if SS.company["show_mad"]:
+        SS.fx_mad = st.number_input("Taux EUR → MAD (contre-valeur)", value=float(SS.fx_mad),
+                                    step=0.05, format="%.2f")
 
     st.divider()
     st.caption(
@@ -924,13 +938,13 @@ with tab_invoice:
             hc1.metric("Total à payer", money(tot["total_ht"]))
             hc2.metric("Nombre de lignes", len(inv["lines"]))
             st.caption("Exonéré de TVA — Zone Franche.")
-            if SS.currency == "EUR" and SS.fx_mad:
+            if invoice_fx():
                 st.caption(f"Contre-valeur : **{tot['total_ht']*SS.fx_mad:,.2f} MAD** "
                            f"(taux {SS.fx_mad:.2f})")
 
             html = billing.render_invoice_html(
                 inv, SS.company, currency=SS.currency,
-                fx_mad=SS.fx_mad if SS.currency == "EUR" else None,
+                fx_mad=invoice_fx(),
             )
 
             with st.expander("👁️ Aperçu de la facture", expanded=True):
@@ -939,7 +953,7 @@ with tab_invoice:
             try:
                 pdf_bytes = billing.render_invoice_pdf(
                     inv, SS.company, currency=SS.currency,
-                    fx_mad=SS.fx_mad if SS.currency == "EUR" else None,
+                    fx_mad=invoice_fx(),
                 )
             except Exception as e:  # reportlab manquant, etc.
                 pdf_bytes = None
@@ -1227,7 +1241,7 @@ def pmis_invoice_editor(_pmis, visit: dict):
                    "draught_min": call["draught_min"]},
         "call": call, "lines": lines,
     }
-    fxm = SS.fx_mad if SS.currency == "EUR" else None
+    fxm = invoice_fx()
     html = billing.render_invoice_html(inv, SS.company, currency=SS.currency, fx_mad=fxm)
     with st.expander("👁️ Aperçu de la facture", expanded=True):
         st.components.v1.html(html, height=760, scrolling=True)

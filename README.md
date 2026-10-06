@@ -37,7 +37,8 @@ factures dynamiques** pour le port de **Nador West Med (NWM)**, basée sur le
   lamanage (+30 %/h > 2 h), retard confirmé (+50 %), retard > 20 min (+100 %), navire
   désemparé (+100 %), remorquage sans propulsion (+25 %) et déhalage (25 % du tarif).
 - **🧾 Factures dynamiques** — numérotation automatique, dates & échéance, TVA par ligne,
-  totaux HT / TVA / TTC, contre-valeur en MAD. **Aperçu intégré** + export
+  totaux HT / TVA / TTC, contre-valeur en MAD **optionnelle** (case à cocher dans la barre
+  latérale, désactivée par défaut). **Aperçu intégré** + export
   **HTML imprimable (→ PDF)** et **CSV**.
 - **📈 Tableau de bord** — CA prévisionnel, répartition par catégorie de prestation,
   historique des escales et factures.
