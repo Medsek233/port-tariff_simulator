@@ -40,6 +40,14 @@ factures dynamiques** pour le port de **Nador West Med (NWM)**, basée sur le
   totaux HT / TVA / TTC, contre-valeur en MAD **optionnelle** (case à cocher dans la barre
   latérale, désactivée par défaut). **Aperçu intégré** + export
   **HTML imprimable (→ PDF)** et **CSV**.
+- **🚤 Remorquage — suivi des remorqueurs** — registre des usages de remorqueurs **par
+  escale** (un enregistrement = un remorqueur sur un mouvement) : **import PMIS** des
+  réservations TOWG (remorqueur, traction, prestataire, heures réelles, annulation) sans
+  doublon, ou **saisie manuelle** liée à une escale. **Tarification NWM** automatique (barème
+  par GT, déhalage 25 %, sans propulsion +25 %, annulation paramétrable, majoration libre).
+  **Recherche, filtres** (période, remorqueur, escale, mouvement, source, annulations),
+  **tri**, édition / suppression en ligne, **situation** par remorqueur / escale / mois /
+  prestataire, et **export CSV ou Excel** (détail + situations).
 - **📈 Tableau de bord** — CA prévisionnel, répartition par catégorie de prestation,
   historique des escales et factures.
 - **💾 Persistance SQLite** — navires, catalogue, escales, factures et paramètres sont
@@ -172,6 +180,7 @@ port-tariff_simulator/
 ├── app.py                  # 🧾 Application principale — escales & facturation
 ├── billing.py              # Moteur de tarification & génération de factures
 ├── pmis.py                 # Connecteur PMIS (auth token + visites → factures)
+├── tugs.py                 # Suivi & tarification des remorqueurs par escale
 ├── storage.py              # Persistance des données (SQLite)
 ├── tarifs_data.py          # Données tarifaires (NWM Avril 2025, TM, Algeciras)
 ├── comparateur_tm_nwm.py   # 📊 Comparateur de tarifs (application secondaire)

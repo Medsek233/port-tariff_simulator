@@ -25,7 +25,7 @@ import threading
 DB_PATH = os.environ.get("NWM_DB_PATH", os.path.join(os.path.dirname(__file__), "nwm_data.db"))
 
 # Clés persistées (état applicatif complet).
-KEYS = ["vessels", "catalog", "calls", "invoices", "company", "inv_seq", "pmis_edits"]
+KEYS = ["vessels", "catalog", "calls", "invoices", "company", "inv_seq", "pmis_edits", "tugs"]
 
 _lock = threading.Lock()
 
