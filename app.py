@@ -26,6 +26,7 @@ import streamlit as st
 import billing
 import storage
 import tarifs_data as td
+import tugs
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  CONFIGURATION & THÈME
@@ -106,6 +107,7 @@ def init_state():
         ss.invoices = persisted.get("invoices", [])
         ss.inv_seq = persisted.get("inv_seq", 1)
         ss.pmis_edits = persisted.get("pmis_edits", {})
+        ss.tugs = persisted.get("tugs", [])
         # Fusion avec les valeurs par défaut : garantit la présence de toutes les clés
         # même si un enregistrement antérieur était partiel ou d'un ancien modèle.
         ss.company = {**_DEFAULT_COMPANY, **(persisted.get("company") or {})}
@@ -118,6 +120,8 @@ def init_state():
         ss.fx_mad = 10.85
     if "pmis_edits" not in ss:
         ss.pmis_edits = {}
+    if "tugs" not in ss:
+        ss.tugs = []
 
 
 init_state()
@@ -340,9 +344,9 @@ with st.sidebar:
         st.rerun()
 
 
-tab_dash, tab_vessels, tab_catalog, tab_calls, tab_invoice, tab_pmis = st.tabs(
+tab_dash, tab_vessels, tab_catalog, tab_calls, tab_invoice, tab_tugs, tab_pmis = st.tabs(
     ["📈 Tableau de bord", "🚢 Navires", "📖 Catalogue tarifaire",
-     "🛳️ Escales", "🧾 Factures", "🔌 PMIS"]
+     "🛳️ Escales", "🧾 Factures", "🚤 Remorquage", "🔌 PMIS"]
 )
 
 
@@ -997,6 +1001,248 @@ with tab_invoice:
                 "Total": money(t["total_ht"]),
             })
         st.dataframe(pd.DataFrame(hist), hide_index=True, use_container_width=True)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  TAB : REMORQUAGE — suivi des remorqueurs par escale
+# ═══════════════════════════════════════════════════════════════════════════════
+def _tug_call_sources() -> dict:
+    """Escales connues (escales de l'app, visites PMIS chargées, escales déjà saisies)
+    → valeurs de pré-remplissage du formulaire."""
+    src = {}
+    for c in SS.calls:
+        v = vessel_by_id(c.get("vessel_id")) or {}
+        src[f"{c['ref']} · {v.get('name', '—')}"] = {
+            "escale": c["ref"], "navire": v.get("name", ""), "imo": v.get("imo", ""),
+            "gt": float(v.get("gt") or 0), "visit_id": None}
+    for vis in SS.get("pmis_rows", []):
+        ship = vis.get("ship") or {}
+        ref = str(vis.get("business_id") or vis.get("visit_id"))
+        src[f"{ref} · {(ship.get('target_name') or '').strip()} (PMIS)"] = {
+            "escale": ref, "navire": (ship.get("target_name") or "").strip(),
+            "imo": ship.get("imo_number") or "", "gt": float(ship.get("gross_tonnage") or 0),
+            "visit_id": vis.get("visit_id")}
+    for r in SS.tugs:
+        key = f"{r.get('escale')} · {r.get('navire')}"
+        if r.get("escale") and not any(k.startswith(f"{r.get('escale')} ·") for k in src):
+            src[key] = {"escale": r.get("escale"), "navire": r.get("navire") or "",
+                        "imo": r.get("imo") or "", "gt": float(r.get("gt") or 0),
+                        "visit_id": r.get("visit_id")}
+    return src
+
+
+with tab_tugs:
+    st.subheader("🚤 Remorquage — usages & tarification par escale")
+    annul_pct = float(SS.company.get("tug_annul_pct", 100.0))
+    st.caption("Un enregistrement = **un remorqueur sur un mouvement** d'une escale. "
+               "Tarif NWM par remorqueur et par mouvement selon le **GT** du navire "
+               "(barème + 150 € / 5 000 GT au-delà de 50 000 GT) ; déhalage = 25 % du "
+               "tarif ; sans propulsion = +25 % ; annulation = "
+               f"+{annul_pct:.0f} % ; majoration libre en %. Le remorquage n'est pas "
+               "porté sur la facture d'escale NWM : ce module en assure le suivi.")
+
+    with st.expander("⚙️ Règles de tarification"):
+        SS.company["tug_annul_pct"] = st.number_input(
+            "Majoration d'un remorqueur en annulation (%)", 0.0, 500.0, annul_pct, 5.0,
+            key="tug_annul_pct_in")
+        annul_pct = float(SS.company["tug_annul_pct"])
+        bar = pd.DataFrame([{"GT de": lo, "GT à": hi, "Tarif (€)": t}
+                            for lo, hi, t in td.REMORQUAGE_NWM])
+        st.dataframe(bar, hide_index=True, use_container_width=True)
+        st.caption(f"Au-delà de 50 000 GT : + {td.REMORQUAGE_NWM_SUP:.0f} € par tranche "
+                   "de 5 000 GT.")
+    SS.tugs = [tugs.price(r, annul_pct) for r in SS.tugs]
+
+    # ---- 1 · Import PMIS
+    ic1, ic2 = st.columns(2)
+    with ic1.expander("🔌 Importer depuis PMIS (réservations TOWG)", expanded=not SS.tugs):
+        prow = SS.get("pmis_rows", [])
+        if not prow:
+            st.info("Interrogez d'abord PMIS dans l'onglet **🔌 PMIS** : les remorqueurs "
+                    "des visites chargées pourront ensuite être importés ici.")
+        else:
+            st.write(f"{len(prow)} visite(s) chargée(s) depuis PMIS.")
+            if st.button("⬇️ Importer les remorqueurs", type="primary", key="tug_import"):
+                incoming = [tugs.price(r, annul_pct) for v in prow
+                            for r in tugs.records_from_visit(v)]
+                SS.tugs, n_add, n_skip = tugs.merge_records(SS.tugs, incoming)
+                SS.tug_ver = SS.get("tug_ver", 0) + 1
+                st.success(f"{n_add} usage(s) importé(s)"
+                           + (f", {n_skip} déjà présent(s)" if n_skip else "") + ".")
+
+    # ---- 2 · Saisie manuelle
+    with ic2.expander("➕ Enregistrer un remorqueur", expanded=False):
+        sources = _tug_call_sources()
+        pick = st.selectbox("Escale", ["— Saisie libre —"] + list(sources), key="tug_src")
+        pre = sources.get(pick, {"escale": "", "navire": "", "imo": "", "gt": 0.0,
+                                 "visit_id": None})
+        known = sorted({r.get("remorqueur") for r in SS.tugs if r.get("remorqueur")})
+        with st.form("tug_add", clear_on_submit=False):
+            f1, f2, f3 = st.columns(3)
+            esc = f1.text_input("Escale", pre["escale"], key=f"tug_esc_{pick}")
+            nav = f2.text_input("Navire", pre["navire"], key=f"tug_nav_{pick}")
+            gt_ = f3.number_input("GT", 0.0, None, float(pre["gt"]), 100.0,
+                                  key=f"tug_gt_{pick}")
+            f4, f5, f6 = st.columns(3)
+            mv = f4.selectbox("Mouvement", tugs.MOVEMENTS)
+            de_ = f5.text_input("De (poste)")
+            vers_ = f6.text_input("Vers (poste)")
+            f7, f8, f9 = st.columns(3)
+            tug_pick = f7.selectbox("Remorqueur", known + ["➕ Nouveau…"])
+            tug_new = f8.text_input("Nouveau remorqueur (si « Nouveau… »)")
+            prest = f9.text_input("Prestataire", "Towing Service Provider")
+            g1, g2, g3, g4 = st.columns(4)
+            d_start = g1.date_input("Début — date", value=date.today())
+            t_start = g2.time_input("Début — heure", value=datetime.now().time().replace(
+                second=0, microsecond=0), step=300)
+            d_end = g3.date_input("Fin — date", value=date.today())
+            t_end = g4.time_input("Fin — heure", value=(datetime.now() + timedelta(hours=1))
+                                  .time().replace(second=0, microsecond=0), step=300)
+            h1, h2, h3, h4 = st.columns(4)
+            ann = h1.checkbox("Annulation")
+            sp = h2.checkbox("Sans propulsion (+25 %)")
+            deh = h3.checkbox("Déhalage (25 %)")
+            maj = h4.number_input("Majoration libre (%)", -100.0, 500.0, 0.0, 5.0)
+            notes = st.text_input("Notes")
+            if st.form_submit_button("💾 Enregistrer", type="primary"):
+                name = (tug_new.strip() if tug_pick.startswith("➕") else tug_pick)
+                if not name:
+                    st.error("Indiquez le nom du remorqueur.")
+                else:
+                    rec = tugs.new_record(
+                        debut=datetime.combine(d_start, t_start).isoformat(timespec="seconds"),
+                        fin=datetime.combine(d_end, t_end).isoformat(timespec="seconds"),
+                        escale=esc.strip(), visit_id=pre.get("visit_id"), navire=nav.strip(),
+                        imo=pre.get("imo") or "", gt=gt_, mouvement=mv, de=de_, vers=vers_,
+                        remorqueur=name, prestataire=prest, activite="Annulation" if ann
+                        else "Normal", annulation=ann, sans_propulsion=sp, dehalage=deh,
+                        majoration=maj, notes=notes)
+                    SS.tugs.append(tugs.price(rec, annul_pct))
+                    SS.tug_ver = SS.get("tug_ver", 0) + 1
+                    st.success(f"{name} enregistré sur l'escale {esc or '—'} "
+                               f"({money(SS.tugs[-1]['montant'])}).")
+
+    if not SS.tugs:
+        st.info("Aucun usage de remorqueur enregistré pour l'instant.")
+    else:
+        df_all = tugs.to_df(SS.tugs)
+
+        # ---- 3 · Filtres, recherche, tri
+        st.markdown("##### 🔎 Registre des remorqueurs")
+        r1, r2, r3 = st.columns([2, 1, 1])
+        q = r1.text_input("Rechercher (navire, escale, remorqueur, poste, notes…)",
+                          key="tug_q")
+        dmin = df_all["debut"].min()
+        dmax = df_all["debut"].max()
+        dmin = dmin.date() if pd.notna(dmin) else date.today()
+        dmax = dmax.date() if pd.notna(dmax) else date.today()
+        period = r2.date_input("Période (début)", value=(dmin, dmax), key="tug_period")
+        sort_cols = {"Début": "debut", "Montant": "montant", "Remorqueur": "remorqueur",
+                     "Escale": "escale", "Navire": "navire", "Durée": "duree_h", "GT": "gt"}
+        sc1, sc2 = r3.columns(2)
+        sort_by = sc1.selectbox("Trier par", list(sort_cols), key="tug_sort")
+        desc = sc2.selectbox("Ordre", ["↓", "↑"], key="tug_order") == "↓"
+        s1, s2, s3, s4, s5 = st.columns([2, 2, 2, 1, 1])
+        f_tugs = s1.multiselect("Remorqueurs", sorted(df_all["remorqueur"].unique()),
+                                key="tug_f_tug")
+        f_calls = s2.multiselect("Escales", sorted(df_all["escale"].unique()),
+                                 key="tug_f_call")
+        f_mv = s3.multiselect("Mouvements", sorted(df_all["mouvement"].unique()),
+                              key="tug_f_mv")
+        f_src = s4.multiselect("Source", sorted(df_all["source"].unique()), key="tug_f_src")
+        f_ann = s5.checkbox("Annulations seules", key="tug_f_ann")
+        d_from, d_to = (period if isinstance(period, (list, tuple)) and len(period) == 2
+                        else (None, None))
+        view = tugs.filter_df(df_all, q, d_from, d_to, f_tugs, f_calls, f_mv, f_src, f_ann)
+        view = view.sort_values(sort_cols[sort_by], ascending=not desc, na_position="last")
+
+        k1, k2, k3, k4, k5 = st.columns(5)
+        k1.metric("Opérations", len(view))
+        k2.metric("Remorqueurs", view["remorqueur"].nunique())
+        k3.metric("Escales", view["escale"].nunique())
+        k4.metric("Heures", f"{view['duree_h'].sum():,.1f}")
+        k5.metric("Montant", money(view["montant"].sum()))
+
+        st.caption("Modifiez les cellules, ajoutez (+) ou supprimez des lignes puis "
+                   "**enregistrez**. Durée, tarif et montant sont recalculés. Cliquez sur un "
+                   "en-tête de colonne pour trier.")
+        ed_key = f"tug_editor_{SS.get('tug_ver', 0)}_{hash(tuple(view['id']))}"
+        edited = st.data_editor(
+            view, key=ed_key, num_rows="dynamic", hide_index=True, use_container_width=True,
+            column_order=[c for c in tugs.COLUMNS if c not in ("id", "visit_id", "imo")],
+            disabled=["duree_h", "tarif_base", "majoration_totale", "montant", "source"],
+            column_config={
+                "debut": st.column_config.DatetimeColumn("Début", format="DD/MM/YYYY HH:mm"),
+                "fin": st.column_config.DatetimeColumn("Fin", format="DD/MM/YYYY HH:mm"),
+                "duree_h": st.column_config.NumberColumn("Durée (h)", format="%.2f"),
+                "escale": st.column_config.TextColumn("Escale"),
+                "navire": st.column_config.TextColumn("Navire"),
+                "gt": st.column_config.NumberColumn("GT", format="%.0f"),
+                "mouvement": st.column_config.SelectboxColumn("Mouvement",
+                                                              options=tugs.MOVEMENTS),
+                "de": st.column_config.TextColumn("De"),
+                "vers": st.column_config.TextColumn("Vers"),
+                "remorqueur": st.column_config.TextColumn("Remorqueur"),
+                "bollard_pull": st.column_config.NumberColumn("Traction (t)", format="%.0f"),
+                "prestataire": st.column_config.TextColumn("Prestataire"),
+                "activite": st.column_config.TextColumn("Activité"),
+                "annulation": st.column_config.CheckboxColumn("Annulation"),
+                "sans_propulsion": st.column_config.CheckboxColumn("Sans propulsion"),
+                "dehalage": st.column_config.CheckboxColumn("Déhalage"),
+                "majoration": st.column_config.NumberColumn("Maj. libre %", format="%.0f"),
+                "tarif_base": st.column_config.NumberColumn("Tarif base", format="%.2f"),
+                "majoration_totale": st.column_config.NumberColumn("Maj. totale %",
+                                                                   format="%.0f"),
+                "montant": st.column_config.NumberColumn("Montant", format="%.2f"),
+                "source": st.column_config.TextColumn("Source"),
+                "notes": st.column_config.TextColumn("Notes", width="medium"),
+            })
+
+        b1, b2, b3 = st.columns(3)
+        if b1.button("💾 Enregistrer les modifications", type="primary", key="tug_save"):
+            shown = set(view["id"])
+            kept = [r for r in SS.tugs if r.get("id") not in shown]
+            changed = []
+            for r in tugs.from_df(edited):
+                r["source"] = r.get("source") or "Manuel"
+                r["annulation"] = bool(r.get("annulation"))
+                r["sans_propulsion"] = bool(r.get("sans_propulsion"))
+                r["dehalage"] = bool(r.get("dehalage"))
+                changed.append(tugs.price(r, annul_pct))
+            SS.tugs = kept + changed
+            SS.tug_ver = SS.get("tug_ver", 0) + 1
+            st.success(f"{len(changed)} ligne(s) enregistrée(s).")
+            st.rerun()
+        b2.download_button("⬇️ Exporter le tableau filtré (CSV)",
+                           tugs.export_df(view).to_csv(index=False, sep=";").encode("utf-8-sig"),
+                           file_name=f"remorquage_{date.today():%Y%m%d}.csv", mime="text/csv",
+                           use_container_width=True)
+        try:
+            b3.download_button("⬇️ Exporter + situation (Excel)", tugs.to_excel(view),
+                               file_name=f"remorquage_{date.today():%Y%m%d}.xlsx",
+                               mime="application/vnd.openxmlformats-officedocument."
+                                    "spreadsheetml.sheet", use_container_width=True)
+        except Exception as e:  # openpyxl manquant
+            b3.warning(f"Export Excel indisponible ({e})")
+
+        # ---- 4 · Situation
+        st.markdown("##### 📊 Situation des remorqueurs")
+        st.caption("Calculée sur le tableau filtré ci-dessus.")
+        monthly = view.assign(mois=view["debut"].dt.strftime("%Y-%m").fillna("—"))
+        st_t, st_c, st_m, st_p = st.tabs(["Par remorqueur", "Par escale", "Par mois",
+                                          "Par prestataire"])
+        for tab_, frame, by in ((st_t, view, "remorqueur"), (st_c, view, "escale"),
+                                (st_m, monthly, "mois"), (st_p, view, "prestataire")):
+            with tab_:
+                sit = tugs.situation(frame, by)
+                if sit.empty:
+                    st.info("Aucune donnée.")
+                    continue
+                cc1, cc2 = st.columns([3, 2])
+                cc1.dataframe(sit, hide_index=True, use_container_width=True,
+                              column_config={"Montant": st.column_config.NumberColumn(
+                                  "Montant", format="%.2f")})
+                cc2.bar_chart(sit.set_index(by)[["Montant"]], height=260)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
