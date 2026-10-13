@@ -43,7 +43,9 @@ factures dynamiques** pour le port de **Nador West Med (NWM)**, basée sur le
 - **🚤 Remorquage — suivi des remorqueurs** — registre des usages de remorqueurs **par
   escale** (un enregistrement = un remorqueur sur un mouvement) : **import PMIS** des
   réservations TOWG (remorqueur, traction, prestataire, heures réelles, annulation) sans
-  doublon, ou **saisie manuelle** liée à une escale. **Tarification NWM** automatique (barème
+  doublon, **limité à une liste de visit ID** (pour écarter les escales de test renvoyées
+  par PMIS ; bouton pour retirer les usages importés hors liste), ou **saisie manuelle**
+  liée à une escale. **Tarification NWM** automatique (barème
   par GT, déhalage 25 %, sans propulsion +25 %, annulation paramétrable, majoration libre).
   **Recherche, filtres** (période, remorqueur, escale, mouvement, source, annulations),
   **tri**, édition / suppression en ligne, **situation** par remorqueur / escale / mois /
@@ -137,7 +139,8 @@ récupérer les **visites facturables** et générer les factures automatiquemen
   statut, `billable`, pagination).
 - Chaque visite facturable → facture : **droits de port** (nautique / port /
   stationnement, VG basé sur `max_static_draught_full_load`) + **pilotage** par mouvement
-  (annulation ⇒ **+100 %**). **Remorqueurs et lamanage exclus.** Terminal déduit du nom du
+  (annulation ⇒ **+100 %** ; navire désemparé ⇒ **+100 %**, d'après l'`activity_type` du
+  service PILO contenant « désemparé » / « disabled »). **Remorqueurs et lamanage exclus.** Terminal déduit du nom du
   poste (préfixe : TCE/TCO → Conteneurs, TRV → Roulier, PP → Hydrocarbures, TGL → GAZ,
   TMD/TVS → MD).
 - **Escale au mouillage seul** (emplacements contenant ANCH / MOUILL / RADE) ⇒ facturée au
@@ -149,6 +152,10 @@ récupérer les **visites facturables** et générer les factures automatiquemen
 - **Paramètres modifiables** avant facturation : postes & dates de l'itinéraire, terminal de
   facturation, TE déclaré, LOA / largeur / GT, client & ICE, mouvements de pilotage
   (barème, annulation, facturer ou non). La facture est **recalculée** à chaque modification.
+- **Export Excel par liste de visit ID** : visit ID, navire, LOA et montant de l'escale,
+  avec le **total en euros** sous le tableau (paramètres modifiés et articles inclus).
+  L'API PMIS ne filtrant pas par identifiant, la période ETA / ETD est parcourue page par
+  page et seules les visites demandées sont retenues.
 - **Articles supplémentaires** : articles du catalogue (chiffrés selon les paramètres de
   l'escale) ou lignes libres (désignation + prix unitaire). Les modifications sont
   conservées par visite (bouton *Revenir aux données PMIS* pour les annuler).
