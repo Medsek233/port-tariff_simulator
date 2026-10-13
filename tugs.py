@@ -184,6 +184,26 @@ def from_df(df: pd.DataFrame) -> list[dict]:
     return out
 
 
+def _id_str(x) -> str:
+    """214 / 214.0 / '214' → '214' (identifiants de visite comparables)."""
+    if x is None or (isinstance(x, float) and x != x):
+        return ""
+    if isinstance(x, float) and x.is_integer():
+        return str(int(x))
+    return str(x).strip()
+
+
+def record_in_visits(rec: dict, ids) -> bool:
+    """Enregistrement rattaché à l'une des visites (visit_id ou n° d'escale)."""
+    ids = {str(i) for i in ids}
+    return _id_str(rec.get("visit_id")) in ids or _id_str(rec.get("escale")) in ids
+
+
+def visits_mask(df: pd.DataFrame, ids) -> pd.Series:
+    ids = {str(i) for i in ids}
+    return df["visit_id"].map(_id_str).isin(ids) | df["escale"].map(_id_str).isin(ids)
+
+
 def filter_df(df: pd.DataFrame, search: str = "", date_from=None, date_to=None,
               tugs=None, calls=None, movements=None, sources=None,
               only_cancelled: bool = False) -> pd.DataFrame:

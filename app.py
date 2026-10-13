@@ -1053,25 +1053,66 @@ with tab_tugs:
                    "de 5 000 GT.")
     SS.tugs = [tugs.price(r, annul_pct) for r in SS.tugs]
 
-    # ---- 1 · Import PMIS
-    ic1, ic2 = st.columns(2)
-    with ic1.expander("🔌 Importer depuis PMIS (réservations TOWG)", expanded=not SS.tugs):
-        prow = SS.get("pmis_rows", [])
-        if not prow:
-            st.info("Interrogez d'abord PMIS dans l'onglet **🔌 PMIS** : les remorqueurs "
-                    "des visites chargées pourront ensuite être importés ici.")
-        else:
-            st.write(f"{len(prow)} visite(s) chargée(s) depuis PMIS.")
-            if st.button("⬇️ Importer les remorqueurs", type="primary", key="tug_import"):
-                incoming = [tugs.price(r, annul_pct) for v in prow
-                            for r in tugs.records_from_visit(v)]
-                SS.tugs, n_add, n_skip = tugs.merge_records(SS.tugs, incoming)
-                SS.tug_ver = SS.get("tug_ver", 0) + 1
-                st.success(f"{n_add} usage(s) importé(s)"
-                           + (f", {n_skip} déjà présent(s)" if n_skip else "") + ".")
+    # ---- 1 · Visites PMIS retenues (liste de visit ID) & import
+    try:
+        import pmis as _pm
+    except Exception:  # « requests » manquant
+        _pm = None
+    st.markdown("##### 🔌 Visites PMIS retenues")
+    st.caption("PMIS renvoie **toutes** les escales, y compris les escales de test : "
+               "indiquez la liste des **visit ID** (ou n° d'escale) à prendre en compte, "
+               "séparés par des virgules, espaces ou retours à la ligne. Seuls leurs "
+               "remorqueurs sont importés ; les visites absentes de l'onglet PMIS sont "
+               "recherchées dans PMIS sur la période indiquée.")
+    v1, v2, v3 = st.columns([3, 1, 1])
+    ids_txt = v1.text_area("Visit ID", value=SS.company.get("tug_visit_ids", ""),
+                           key="tug_ids_in", height=80, placeholder="214, 170, 244")
+    SS.company["tug_visit_ids"] = ids_txt
+    tug_ids = _pm.parse_visit_ids(ids_txt) if _pm else []
+    t_after = v2.date_input("ETA après le", value=date.today() - timedelta(days=60),
+                            key="tug_eta_after")
+    t_before = v3.date_input("ETD avant le", value=date.today() + timedelta(days=15),
+                             key="tug_etd_before")
+    only_ids = st.checkbox("Limiter le registre et la situation à ces visites", value=True,
+                           key="tug_only_ids", disabled=not tug_ids)
+    bi1, bi2 = st.columns(2)
+    if bi1.button(f"⬇️ Importer les remorqueurs de ces visites ({len(tug_ids)})",
+                  type="primary", key="tug_import", disabled=not (tug_ids and _pm),
+                  use_container_width=True):
+        client = _pm.PMISClient()
+        try:
+            with st.spinner("Recherche des visites…"):
+                found, missing = _pm.fetch_visits_by_ids(
+                    client, tug_ids, SS.get("pmis_rows", []),
+                    etaAfterDate=t_after.strftime("%Y-%m-%d"),
+                    etdBeforeDate=t_before.strftime("%Y-%m-%d"))
+        except _pm.PMISError as e:      # PMIS injoignable : visites déjà chargées
+            st.error(str(e))
+            found, missing = _pm.fetch_visits_by_ids(None, tug_ids, SS.get("pmis_rows", []))
+        if found:
+            incoming = [tugs.price(r, annul_pct) for v in found
+                        for r in tugs.records_from_visit(v)]
+            SS.tugs, n_add, n_skip = tugs.merge_records(SS.tugs, incoming)
+            SS.tug_ver = SS.get("tug_ver", 0) + 1
+            st.success(f"{len(found)} visite(s) : {n_add} usage(s) importé(s)"
+                       + (f", {n_skip} déjà présent(s)" if n_skip else "") + ".")
+        if missing:
+            st.warning("Visite(s) introuvable(s) : " + ", ".join(missing)
+                       + ("" if client.configured() else
+                          " — PMIS non configuré : interrogez les visites dans l'onglet "
+                          "🔌 PMIS ou renseignez les secrets."))
+    if tug_ids:
+        outside = [r for r in SS.tugs
+                   if r.get("source") == "PMIS" and not tugs.record_in_visits(r, tug_ids)]
+        if outside and bi2.button(f"🧹 Retirer {len(outside)} usage(s) PMIS hors de la liste",
+                                  key="tug_purge", use_container_width=True):
+            drop = {r["id"] for r in outside}
+            SS.tugs = [r for r in SS.tugs if r.get("id") not in drop]
+            SS.tug_ver = SS.get("tug_ver", 0) + 1
+            st.rerun()
 
     # ---- 2 · Saisie manuelle
-    with ic2.expander("➕ Enregistrer un remorqueur", expanded=False):
+    with st.expander("➕ Enregistrer un remorqueur manuellement", expanded=False):
         sources = _tug_call_sources()
         pick = st.selectbox("Escale", ["— Saisie libre —"] + list(sources), key="tug_src")
         pre = sources.get(pick, {"escale": "", "navire": "", "imo": "", "gt": 0.0,
@@ -1126,6 +1167,10 @@ with tab_tugs:
         st.info("Aucun usage de remorqueur enregistré pour l'instant.")
     else:
         df_all = tugs.to_df(SS.tugs)
+        if tug_ids and only_ids:
+            df_all = df_all[tugs.visits_mask(df_all, tug_ids)]
+            st.caption(f"Registre limité aux visites : {', '.join(tug_ids)} "
+                       f"({len(df_all)} usage(s)).")
 
         # ---- 3 · Filtres, recherche, tri
         st.markdown("##### 🔎 Registre des remorqueurs")
@@ -1330,10 +1375,11 @@ def pmis_invoice_editor(_pmis, visit: dict):
     # --- Pilotage
     st.markdown("**🧭 Pilotage** (remorquage et amarrage exclus)")
     pil_df = pd.DataFrame(p0["pilotage"], columns=["mouvement", "de", "vers", "date", "type",
-                                                   "annulation", "facturer"])
+                                                   "annulation", "desempare", "facturer"])
     pil_df["type"] = pil_df["type"].map(lambda t: _pmis.PILOT_TYPES.get(t, t))
     pil_df["date"] = pd.to_datetime(pil_df["date"].map(_ts))
-    pil_df["annulation"] = pil_df["annulation"].astype(bool)
+    pil_df["annulation"] = pil_df["annulation"].fillna(False).astype(bool)
+    pil_df["desempare"] = pil_df["desempare"].fillna(False).astype(bool)
     pil_df["facturer"] = pil_df["facturer"].astype(bool)
     pil_ed = st.data_editor(
         pil_df, num_rows="dynamic", hide_index=True, use_container_width=True,
@@ -1346,6 +1392,9 @@ def pmis_invoice_editor(_pmis, visit: dict):
             "type": st.column_config.SelectboxColumn(
                 "Barème", options=list(_pmis.PILOT_TYPES.values()), required=True),
             "annulation": st.column_config.CheckboxColumn("Annulation (+100 %)"),
+            "desempare": st.column_config.CheckboxColumn(
+                "Navire désemparé (+100 %)",
+                help="Repris de PMIS (activity_type « désemparé » / « disabled »)."),
             "facturer": st.column_config.CheckboxColumn("Facturer"),
         })
 
@@ -1409,6 +1458,7 @@ def pmis_invoice_editor(_pmis, visit: dict):
                       "vers": r.get("vers") or "", "date": _iso_or_empty(r.get("date")),
                       "type": pil_code.get(r.get("type"), "ES"),
                       "annulation": bool(r.get("annulation")),
+                      "desempare": bool(r.get("desempare")),
                       "facturer": r.get("facturer") is not False}
                      for r in _records(pil_ed)],
     }
@@ -1598,6 +1648,52 @@ with tab_pmis:
                             f"{_pmis.visit_summary(v)['navire']}": v for v in billables}
                     sel = st.selectbox("Visite facturable", list(opts.keys()))
                     pmis_invoice_editor(_pmis, opts[sel])
+
+            # ---- Export Excel des montants par visite (liste de visit ID)
+            st.divider()
+            st.markdown("##### 📊 Export Excel — montant par visite")
+            st.caption("Indiquez les **visit ID** (ou n° d'escale) à exporter, séparés par des "
+                       "virgules, espaces ou retours à la ligne. Les visites absentes des "
+                       "résultats chargés sont recherchées dans PMIS sur la période "
+                       "ETA / ETD ci-dessus. Les montants tiennent compte des paramètres "
+                       "modifiés et des articles ajoutés.")
+            xls_ids = _pmis.parse_visit_ids(st.text_area(
+                "Visit ID à exporter", key="pmis_xls_ids", height=80,
+                placeholder="214, 170, 244"))
+            if st.button("📊 Préparer l'export", key="pmis_xls_go", disabled=not xls_ids):
+                try:
+                    with st.spinner("Recherche des visites…"):
+                        found, missing = _pmis.fetch_visits_by_ids(
+                            client, xls_ids, SS.get("pmis_rows", []),
+                            etaAfterDate=eta_after.strftime("%Y-%m-%d"),
+                            etdBeforeDate=etd_before.strftime("%Y-%m-%d"))
+                    SS.pmis_xls = {"ids": xls_ids, "visits": found, "missing": missing}
+                except _pmis.PMISError as e:  # PMIS injoignable : visites déjà chargées
+                    st.error(str(e))
+                    found, missing = _pmis.fetch_visits_by_ids(None, xls_ids,
+                                                               SS.get("pmis_rows", []))
+                    SS.pmis_xls = {"ids": xls_ids, "visits": found, "missing": missing}
+            xres = SS.get("pmis_xls")
+            if xres and xres["ids"] == xls_ids:
+                if xres["missing"]:
+                    st.warning("Visite(s) introuvable(s) sur la période : "
+                               + ", ".join(xres["missing"]))
+                amounts = _pmis.visits_amounts(xres["visits"], SS.catalog, SS.pmis_edits)
+                if not amounts.empty:
+                    st.dataframe(amounts, hide_index=True, use_container_width=True,
+                                 column_config={"Montant escale (EUR)":
+                                                st.column_config.NumberColumn(format="%.2f €")})
+                    x1, x2 = st.columns(2)
+                    x1.metric(f"Total ({len(amounts)} visite(s))",
+                              money(amounts["Montant escale (EUR)"].sum(), "EUR"))
+                    try:
+                        x2.download_button(
+                            "⬇️ Télécharger l'Excel", _pmis.amounts_excel(amounts),
+                            file_name=f"montants_escales_{date.today():%Y%m%d}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument."
+                                 "spreadsheetml.sheet", use_container_width=True)
+                    except Exception as e:  # openpyxl manquant
+                        x2.warning(f"Export Excel indisponible ({e})")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

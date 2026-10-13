@@ -13,7 +13,8 @@ depuis les variables d'environnement. Voir .streamlit/secrets.toml.example.
 Règles métier convenues :
 - Services facturés = droits de port (nautique/port/stationnement) + PILOTAGE.
   Les remorqueurs (TOWG) et le lamanage/amarrage (MOOR) sont EXCLUS.
-- Pilotage : activity_type « annulation » ⇒ majoration +100 %.
+- Pilotage : activity_type « annulation » ⇒ majoration +100 % ;
+  activity_type « navire désemparé » (désemparé / disabled) ⇒ majoration +100 %.
 - Pilotage : Arrival / Departure ⇒ entrée/sortie ; Internal ⇒ changement de quai
   entre deux postes (entrée/sortie si depuis / vers la rade).
 - Terminal déduit du nom du poste (préfixe). Escale au mouillage seul (emplacements
@@ -44,9 +45,12 @@ def _secret(key: str, default=None):
     """Lit un paramètre PMIS depuis st.secrets['pmis'][key] puis PMIS_<KEY>."""
     try:
         import streamlit as st
-        sec = st.secrets.get("pmis", {}) if hasattr(st, "secrets") else {}
-        if key in sec:
-            return sec[key]
+        # load_if_toml_exists() : pas de message « No secrets found » si aucun
+        # secrets.toml (configuration par variables d'environnement / .env).
+        if st.secrets.load_if_toml_exists():
+            sec = st.secrets.get("pmis", {})
+            if key in sec:
+                return sec[key]
     except Exception:
         pass
     return os.environ.get("PMIS_" + key.upper(), default)
@@ -194,6 +198,35 @@ class PMISClient:
             "raw": payload,
         }
 
+    def get_all_visits(self, max_pages: int = 40, **params) -> list[dict]:
+        """Toutes les visites de la période (pages de 50 parcourues jusqu'au total)."""
+        params = {**params, "pageSize": 50}
+        params.pop("page", None)
+        res = self.get_visits(**params)          # 1re page (base de numérotation inconnue)
+        rows, seen = [], set()
+
+        def _add(batch):
+            new = 0
+            for v in batch:
+                k = v.get("visit_id")
+                if k not in seen:
+                    seen.add(k)
+                    rows.append(v)
+                    new += 1
+            return new
+
+        _add(res["rows"])
+        total = res.get("total") or 0
+        page = res.get("page") if isinstance(res.get("page"), int) else 1
+        for _ in range(max_pages):
+            if not res["rows"] or len(rows) >= total:
+                break
+            page += 1
+            res = self.get_visits(**{**params, "page": page})
+            if not _add(res["rows"]):            # plus rien de nouveau : arrêt
+                break
+        return rows
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  MAPPING VISITE PMIS → ESCALE + LIGNES DE FACTURE
@@ -266,6 +299,55 @@ def _pilotage_activity(booking: dict) -> str:
     except Exception:
         pass
     return "normal"
+
+
+DISABLED_KEYS = ("desempar", "désempar", "disabled")
+DESEMPARE_PCT = 100.0      # navire désemparé : majoration du pilotage
+ANNULATION_PCT = 100.0     # pilotage annulé : majoration du pilotage
+
+
+def _pilotage_disabled(booking: dict) -> bool:
+    """True si le service de pilotage est marqué « navire désemparé » (activity_type)."""
+    acts = [(booking.get("resource_usage_details") or {}).get("activity_type")]
+    for res in (booking.get("resources") or []):
+        acts.append(((res.get("resource_properties") or {}).get("usage_details") or {})
+                    .get("activity_type"))
+    return any(a and any(k in str(a).lower() for k in DISABLED_KEYS) for a in acts)
+
+
+def parse_visit_ids(text) -> list[str]:
+    """« 214, 170 244\n2026-000000137 » → ['214', '170', '244', '2026-000000137'].
+    Accepte les visit_id PMIS et les n° d'escale (business_id)."""
+    import re
+    return list(dict.fromkeys(t for t in re.split(r"[\s,;]+", str(text or "")) if t))
+
+
+def visit_matches(visit: dict, ids) -> bool:
+    ids = {str(i) for i in ids}
+    return (str(visit.get("visit_id")) in ids) or (str(visit.get("business_id")) in ids)
+
+
+def fetch_visits_by_ids(client, ids, loaded=None, **date_params):
+    """Visites correspondant aux IDs : d'abord parmi les visites déjà chargées, puis via
+    PMIS (l'API ne filtre pas par ID : la période est parcourue page par page).
+    Renvoie (visites, ids_introuvables)."""
+    ids = [str(i) for i in ids]
+    found = {}
+    for v in (loaded or []):
+        if visit_matches(v, ids):
+            found[str(v.get("visit_id"))] = v
+    def _missing():
+        got = {str(v.get("visit_id")) for v in found.values()} | \
+              {str(v.get("business_id")) for v in found.values()}
+        return [i for i in ids if i not in got]
+    if _missing() and client is not None and client.configured():
+        for v in client.get_all_visits(**date_params):
+            if visit_matches(v, _missing()):
+                found[str(v.get("visit_id"))] = v
+    order = {i: n for n, i in enumerate(ids)}
+    rows = sorted(found.values(), key=lambda v: min(order.get(str(v.get("visit_id")), 1e9),
+                                                    order.get(str(v.get("business_id")), 1e9)))
+    return rows, _missing()
 
 
 def is_billable(visit: dict) -> bool:
@@ -407,6 +489,7 @@ def visit_pilotage(visit: dict) -> list[dict]:
                 "date": _iso(_movement_time(m)),
                 "type": pilot_type(mname, fr, to),
                 "annulation": _pilotage_activity(b) == "annulation",
+                "desempare": _pilotage_disabled(b),
                 "facturer": True,
             })
     return out
@@ -523,11 +606,13 @@ def build_from_params(p: dict, catalog: list[dict], extras: list[dict] | None = 
         it = cat.get("PIL-CQ" if pl.get("type") == "CQ" else "PIL-ES")
         if not it:
             continue
-        maj = 100.0 if pl.get("annulation") else 0.0
+        maj = (ANNULATION_PCT if pl.get("annulation") else 0.0) + \
+              (DESEMPARE_PCT if pl.get("desempare") else 0.0)
         l = billing.make_line(it, 1, ctx, maj)
         l["designation"] = f"{l['designation']} — {pl.get('mouvement') or 'Mouvement'}"
         if maj:
-            l["designation"] += " (annulation)"
+            l["designation"] += " (annulation)" if pl.get("annulation") else ""
+            l["designation"] += " (navire désemparé)" if pl.get("desempare") else ""
         lines.append(l)
 
     # 4) Articles ajoutés (catalogue chiffré selon l'escale, ou lignes libres)
@@ -564,3 +649,58 @@ def build_call_and_lines(visit: dict, catalog: list[dict],
     p = visit_params(visit)
     p["bill_terminal"] = bill_terminal
     return build_from_params(p, catalog, extras)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  EXPORT EXCEL — montant par visite
+# ═══════════════════════════════════════════════════════════════════════════════
+def visits_amounts(visits: list[dict], catalog: list[dict], edits: dict | None = None):
+    """Montant de chaque visite (paramètres modifiés & articles ajoutés inclus)."""
+    import pandas as pd
+    out = []
+    for v in visits:
+        e = (edits or {}).get(str(v.get("visit_id"))) or {}
+        params = e.get("params") or visit_params(v)
+        call, lines = build_from_params(params, catalog, e.get("extras") or [])
+        out.append({"Visit ID": v.get("visit_id"),
+                    "Navire": call["vessel_inline"]["name"],
+                    "LOA (m)": call["vessel_inline"]["loa"],
+                    "Montant escale (EUR)": billing.invoice_totals(lines)["total_ht"]})
+    return pd.DataFrame(out, columns=["Visit ID", "Navire", "LOA (m)", "Montant escale (EUR)"])
+
+
+def amounts_excel(df) -> bytes:
+    """Classeur : une ligne par visite, puis le TOTAL en euros sous le tableau."""
+    import io
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Montants escales"
+    head_fill = PatternFill("solid", fgColor="0B3C5D")
+    thin = Side(style="thin", color="C9D6DF")
+    ws.append(list(df.columns))
+    for c in ws[1]:
+        c.font = Font(bold=True, color="FFFFFF")
+        c.fill = head_fill
+        c.alignment = Alignment(horizontal="center", vertical="center")
+    for row in df.itertuples(index=False):
+        ws.append(list(row))
+    ws.append(["TOTAL", None, None, round(float(df.iloc[:, 3].sum()), 2) if len(df) else 0.0])
+    tot = ws.max_row
+    for c in ws[tot]:
+        c.font = Font(bold=True)
+        c.fill = PatternFill("solid", fgColor="E2F4F6")
+    for r in ws.iter_rows(min_row=1, max_row=tot):
+        for c in r:
+            c.border = Border(top=thin, bottom=thin, left=thin, right=thin)
+    for r in range(2, tot + 1):
+        ws.cell(r, 3).number_format = "#,##0.00"
+        ws.cell(r, 4).number_format = '#,##0.00 "€"'
+    for col, w in zip("ABCD", (12, 32, 10, 22)):
+        ws.column_dimensions[col].width = w
+    ws.freeze_panes = "A2"
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
