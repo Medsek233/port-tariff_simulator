@@ -165,6 +165,22 @@ récupérer les **visites facturables** et générer les factures automatiquemen
   l'escale) ou lignes libres (désignation + prix unitaire). Les modifications sont
   conservées par visite (bouton *Revenir aux données PMIS* pour les annuler).
 
+### 🧪 Explorateur API PMIS (façon Postman)
+
+L'onglet **🧪 API PMIS** permet d'interroger PMIS sans écrire d'URL :
+
+- choix de l'endpoint (`GET /visits`, `GET /services`, `PUT /billing`) ;
+- **filtres lisibles** : bornes de dates ETA / ETD / ATA / ATD, navire, facturable,
+  statut, service, pagination ou **toutes les pages** ;
+- aperçu de la requête exacte + commande **cURL** (jeton masqué) ;
+- réponse : statut, durée, taille, nombre de lignes, puis **tableaux** Visites /
+  Mouvements / Services avec recherche, ou **JSON** brut ; export CSV, Excel et JSON ;
+- historique des requêtes et bouton pour réutiliser les visites dans les autres onglets ;
+- `PUT /billing` (écriture dans PMIS) n'est envoyé qu'après **confirmation explicite** ;
+- **collection Postman v2.1** téléchargeable (login avec enregistrement automatique du
+  jeton, refresh, visites, services, billing, requête courante) — **sans aucun secret** :
+  URLs et identifiants sont des variables à renseigner dans Postman.
+
 ### 🔐 Secrets (jamais dans le code / GitHub)
 
 Renseignez les paramètres PMIS dans les **secrets de l'application** :
@@ -192,6 +208,7 @@ port-tariff_simulator/
 ├── app.py                  # 🧾 Application principale — escales & facturation
 ├── billing.py              # Moteur de tarification & génération de factures
 ├── pmis.py                 # Connecteur PMIS (auth token + visites → factures)
+├── pmis_api.py             # Explorateur API PMIS (façon Postman) + collection Postman
 ├── tugs.py                 # Suivi & tarification des remorqueurs par escale
 ├── storage.py              # Persistance des données (SQLite)
 ├── tarifs_data.py          # Données tarifaires (NWM Avril 2025, TM, Algeciras)
