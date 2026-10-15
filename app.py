@@ -344,9 +344,10 @@ with st.sidebar:
         st.rerun()
 
 
-tab_dash, tab_vessels, tab_catalog, tab_calls, tab_invoice, tab_tugs, tab_pmis = st.tabs(
+(tab_dash, tab_vessels, tab_catalog, tab_calls, tab_invoice, tab_pilot, tab_tugs,
+ tab_pmis) = st.tabs(
     ["📈 Tableau de bord", "🚢 Navires", "📖 Catalogue tarifaire",
-     "🛳️ Escales", "🧾 Factures", "🚤 Remorquage", "🔌 PMIS"]
+     "🛳️ Escales", "🧾 Factures", "🧭 Pilotage", "🚤 Remorquage", "🔌 PMIS"]
 )
 
 
@@ -1001,6 +1002,109 @@ with tab_invoice:
                 "Total": money(t["total_ht"]),
             })
         st.dataframe(pd.DataFrame(hist), hide_index=True, use_container_width=True)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  TAB : PILOTAGE — opérations, POB / POFF & recettes par liste de visites
+# ═══════════════════════════════════════════════════════════════════════════════
+with tab_pilot:
+    st.subheader("🧭 Pilotage — opérations & recettes par visite")
+    st.caption("Indiquez la liste des **visit ID** (ou n° d'escale) à analyser : une ligne "
+               "par opération de pilotage facturée (navire, IMO, LOA, largeur, poste, "
+               "terminal, **POB** / **POFF**, pilote, montant). Les montants sont ceux de la "
+               "facture : barème selon le VG, annulation et navire désemparé (+100 %), "
+               "paramètres modifiés dans l'onglet 🔌 PMIS inclus.")
+    try:
+        import pmis as _pp
+    except Exception:  # « requests » manquant
+        _pp = None
+    q1, q2, q3 = st.columns([3, 1, 1])
+    pil_ids_txt = q1.text_area("Visit ID", value=SS.company.get("pilot_visit_ids", ""),
+                               key="pil_ids_in", height=80, placeholder="214, 170, 244")
+    SS.company["pilot_visit_ids"] = pil_ids_txt
+    pil_ids = _pp.parse_visit_ids(pil_ids_txt) if _pp else []
+    p_after = q2.date_input("ETA après le", value=date.today() - timedelta(days=60),
+                            key="pil_eta_after")
+    p_before = q3.date_input("ETD avant le", value=date.today() + timedelta(days=15),
+                             key="pil_etd_before")
+    if st.button(f"🔍 Charger les visites ({len(pil_ids)})", type="primary",
+                 key="pil_load", disabled=not (pil_ids and _pp)):
+        client = _pp.PMISClient()
+        try:
+            with st.spinner("Recherche des visites…"):
+                found, missing = _pp.fetch_visits_by_ids(
+                    client, pil_ids, SS.get("pmis_rows", []),
+                    etaAfterDate=p_after.strftime("%Y-%m-%d"),
+                    etdBeforeDate=p_before.strftime("%Y-%m-%d"))
+        except _pp.PMISError as e:      # PMIS injoignable : visites déjà chargées
+            st.error(str(e))
+            found, missing = _pp.fetch_visits_by_ids(None, pil_ids, SS.get("pmis_rows", []))
+        SS.pilot_res = {"ids": pil_ids, "visits": found, "missing": missing,
+                        "configured": client.configured()}
+
+    pres = SS.get("pilot_res")
+    if not pres:
+        st.info("Saisissez les visit ID puis cliquez sur **Charger les visites**. Les "
+                "visites déjà interrogées dans l'onglet 🔌 PMIS sont reprises sans "
+                "nouvel appel.")
+    else:
+        if pres["ids"] != pil_ids:
+            st.caption("⚠️ La liste a changé : cliquez sur **Charger les visites** pour "
+                       "mettre à jour le rapport.")
+        if pres["missing"]:
+            st.warning("Visite(s) introuvable(s) : " + ", ".join(pres["missing"])
+                       + ("" if pres["configured"] else
+                          " — PMIS non configuré : seules les visites chargées dans "
+                          "l'onglet 🔌 PMIS sont disponibles."))
+        rep = _pp.pilotage_report(pres["visits"], SS.catalog, SS.pmis_edits)
+        if rep.empty:
+            st.info("Aucune opération de pilotage facturée pour ces visites.")
+        else:
+            k1, k2, k3, k4 = st.columns(4)
+            k1.metric("Opérations", len(rep))
+            k2.metric("Navires", rep["Navire"].nunique())
+            k3.metric("Heures pilote (POB → POFF)", f"{rep['Durée (h)'].sum():,.1f}")
+            k4.metric("Recettes pilotage", money(rep["Montant pilotage (EUR)"].sum(), "EUR"))
+
+            st.dataframe(
+                rep, hide_index=True, use_container_width=True,
+                column_config={
+                    "POB": st.column_config.DatetimeColumn("POB", format="DD/MM/YYYY HH:mm"),
+                    "POFF": st.column_config.DatetimeColumn("POFF", format="DD/MM/YYYY HH:mm"),
+                    "VG (m³)": st.column_config.NumberColumn(format="%.2f"),
+                    "Montant pilotage (EUR)": st.column_config.NumberColumn(format="%.2f €"),
+                })
+            d1, d2 = st.columns(2)
+            try:
+                d1.download_button("⬇️ Télécharger l'Excel", _pp.pilotage_excel(rep),
+                                   file_name=f"pilotage_{date.today():%Y%m%d}.xlsx",
+                                   mime="application/vnd.openxmlformats-officedocument."
+                                        "spreadsheetml.sheet", use_container_width=True)
+            except Exception as e:  # openpyxl manquant
+                d1.warning(f"Export Excel indisponible ({e})")
+            d2.download_button("⬇️ Télécharger le CSV", _pp.pilotage_csv(rep),
+                               file_name=f"pilotage_{date.today():%Y%m%d}.csv",
+                               mime="text/csv", use_container_width=True)
+
+            st.markdown("##### 📈 Recettes de pilotage")
+            groups = {"Jour": None, "Mois": None, "Terminal": "Terminal", "Navire": "Navire",
+                      "Pilote": "Pilote", "Mouvement": "Mouvement"}
+            gsel = st.radio("Regrouper par", list(groups), horizontal=True, key="pil_group")
+            frame = rep.copy()
+            if gsel == "Jour":
+                frame["Jour"] = frame["POB"].dt.strftime("%Y-%m-%d").fillna("—")
+            elif gsel == "Mois":
+                frame["Mois"] = frame["POB"].dt.strftime("%Y-%m").fillna("—")
+            by = groups[gsel] or gsel
+            summ = _pp.pilotage_summary(frame, by)
+            if gsel not in ("Jour", "Mois"):
+                summ = summ.sort_values("Montant", ascending=False)
+            g1, g2 = st.columns([3, 2])
+            g1.bar_chart(summ.set_index(by)[["Montant"]], height=320,
+                         y_label="EUR", x_label=by)
+            g2.dataframe(summ, hide_index=True, use_container_width=True,
+                         column_config={"Montant": st.column_config.NumberColumn(
+                             format="%.2f €")})
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

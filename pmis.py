@@ -704,3 +704,149 @@ def amounts_excel(df) -> bytes:
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  RAPPORT PILOTAGE — opérations, POB / POFF et recettes par visite
+# ═══════════════════════════════════════════════════════════════════════════════
+PILOT_REPORT_COLUMNS = [
+    "Visit ID", "N° escale", "Navire", "IMO", "LOA (m)", "Largeur (m)", "VG (m³)",
+    "Mouvement", "Poste", "Terminal", "POB", "POFF", "Durée (h)", "Pilote", "Barème",
+    "Majoration (%)", "Montant pilotage (EUR)",
+]
+
+
+def pilotage_times(visit: dict) -> list[dict]:
+    """POB / POFF, pilote et vedette de chaque service PILO, dans le même ordre que
+    visit_pilotage(). POB = début réel, POFF = fin réelle (pilote, sinon réservation)."""
+    movements = sorted((visit.get("movements") or []),
+                       key=lambda m: (_iso(_movement_time(m)) or ""))
+    bookings = {b.get("booking_id"): b for b in (visit.get("resource_bookings") or [])}
+    out = []
+    for m in movements:
+        for bid in (m.get("booking_ids") or []):
+            b = bookings.get(bid) or {}
+            if ((b.get("service_type") or {}).get("imo_code") or "").upper() != "PILO":
+                continue
+            usage = b.get("resource_usage_details") or {}
+            pilot, boat, p_usage = "", "", {}
+            for res in (b.get("resources") or []):
+                kind = ((res.get("resources_type") or {}).get("resource_type_name") or "").lower()
+                det = res.get("resource_details") or {}
+                if "boat" in kind or "vedette" in kind:
+                    boat = (det.get("target_name") or det.get("alias") or "").strip()
+                elif "pilot" in kind or "pilote" in kind:
+                    pilot = (det.get("alias") or " ".join(
+                        x for x in (det.get("name"), det.get("surname")) if x)).strip()
+                    p_usage = (res.get("resource_properties") or {}).get("usage_details") or {}
+            out.append({
+                "pob": _iso(_parse_dt(p_usage.get("actual_start") or usage.get("actual_start"))),
+                "poff": _iso(_parse_dt(p_usage.get("actual_completion")
+                                       or usage.get("actual_completion"))),
+                "pilote": pilot, "vedette": boat,
+            })
+    return out
+
+
+def pilotage_report(visits: list[dict], catalog: list[dict], edits: dict | None = None):
+    """Une ligne par opération de pilotage facturée, montants identiques à la facture
+    (dimensions / TE / terminal modifiés, annulation & navire désemparé inclus)."""
+    import pandas as pd
+    cat = {it["code"]: it for it in catalog if it.get("active", True)}
+    rows = []
+    for v in visits:
+        base = visit_params(v)
+        e = (edits or {}).get(str(v.get("visit_id"))) or {}
+        p = e.get("params") or base
+        times = pilotage_times(v)
+        loa, beam, draft = _f(p.get("loa")), _f(p.get("beam")), _f(p.get("draft"))
+        vg = td.calc_vg(loa, beam, draft) if (loa and beam) else 0.0
+        ctx = billing.CallContext(gt=_f(p.get("gt")), vg=vg, loa=loa)
+        legs = [l for l in (p.get("legs") or []) if l.get("start") and l.get("end")]
+        call_term, _mode = resolve_terminal(legs, p.get("bill_terminal"))
+        for i, pl in enumerate(p.get("pilotage") or []):
+            if not pl.get("facturer", True):
+                continue
+            it = cat.get("PIL-CQ" if pl.get("type") == "CQ" else "PIL-ES")
+            if not it:
+                continue
+            maj = (ANNULATION_PCT if pl.get("annulation") else 0.0) + \
+                  (DESEMPARE_PCT if pl.get("desempare") else 0.0)
+            t = times[i] if i < len(times) else {}
+            berth = pl.get("vers") if (pl.get("vers") and not is_anchorage(pl.get("vers"))) \
+                else (pl.get("de") or pl.get("vers") or "")
+            pob, poff = _parse_dt(t.get("pob")), _parse_dt(t.get("poff"))
+            rows.append({
+                "Visit ID": v.get("visit_id"), "N° escale": p.get("ref", ""),
+                "Navire": p.get("name", ""), "IMO": p.get("imo"),
+                "LOA (m)": loa, "Largeur (m)": beam, "VG (m³)": vg,
+                "Mouvement": pl.get("mouvement") or "",
+                "Poste": berth, "Terminal": leg_terminal(berth) or call_term,
+                "POB": pob, "POFF": poff,
+                "Durée (h)": round((poff - pob).total_seconds() / 3600.0, 2)
+                if (pob and poff and poff >= pob) else None,
+                "Pilote": t.get("pilote", ""),
+                "Barème": PILOT_TYPES.get(pl.get("type"), pl.get("type")),
+                "Majoration (%)": maj,
+                "Montant pilotage (EUR)": billing.make_line(it, 1, ctx, maj)["montant_ht"],
+            })
+    df = pd.DataFrame(rows, columns=PILOT_REPORT_COLUMNS)
+    df["POB"] = pd.to_datetime(df["POB"])
+    df["POFF"] = pd.to_datetime(df["POFF"])
+    return df
+
+
+def pilotage_summary(df, by: str):
+    if df.empty:
+        return df.iloc[0:0]
+    out = df.assign(_n=1).groupby(by, dropna=False).agg(
+        Opérations=("_n", "sum"), Navires=("Navire", "nunique"),
+        Heures=("Durée (h)", "sum"), Montant=("Montant pilotage (EUR)", "sum"))
+    out["Heures"] = out["Heures"].round(2)
+    out["Montant"] = out["Montant"].round(2)
+    return out.reset_index()
+
+
+def pilotage_csv(df) -> bytes:
+    out = df.copy()
+    for c in ("POB", "POFF"):
+        out[c] = out[c].dt.strftime("%d/%m/%Y %H:%M").fillna("")
+    return out.to_csv(index=False, sep=";", decimal=",").encode("utf-8-sig")
+
+
+def pilotage_excel(df) -> bytes:
+    """Classeur : détail des opérations + TOTAL, puis synthèses par terminal / mois / navire."""
+    import io
+    import pandas as pd
+    from openpyxl.styles import Font, PatternFill
+
+    buf = io.BytesIO()
+    detail = df.copy()
+    for c in ("POB", "POFF"):
+        detail[c] = detail[c].dt.strftime("%d/%m/%Y %H:%M").fillna("")
+    detail = detail.astype(object)
+    detail.loc[len(detail)] = ["TOTAL"] + [None] * (len(detail.columns) - 2) + \
+        [round(float(df["Montant pilotage (EUR)"].sum()), 2)]
+    monthly = df.assign(Mois=df["POB"].dt.strftime("%Y-%m").fillna("—"))
+    with pd.ExcelWriter(buf, engine="openpyxl") as xw:
+        detail.to_excel(xw, sheet_name="Pilotage", index=False)
+        pilotage_summary(df, "Terminal").to_excel(xw, sheet_name="Par terminal", index=False)
+        pilotage_summary(monthly, "Mois").to_excel(xw, sheet_name="Par mois", index=False)
+        pilotage_summary(df, "Navire").to_excel(xw, sheet_name="Par navire", index=False)
+        head = PatternFill("solid", fgColor="0B3C5D")
+        for ws in xw.book.worksheets:
+            for c in ws[1]:
+                c.font = Font(bold=True, color="FFFFFF")
+                c.fill = head
+            for col in ws.columns:
+                width = max(len(str(c.value or "")) for c in col)
+                ws.column_dimensions[col[0].column_letter].width = min(max(width + 2, 9), 34)
+            ws.freeze_panes = "A2"
+        ws = xw.book["Pilotage"]
+        for c in ws[ws.max_row]:
+            c.font = Font(bold=True)
+            c.fill = PatternFill("solid", fgColor="E2F4F6")
+        mcol = PILOT_REPORT_COLUMNS.index("Montant pilotage (EUR)") + 1
+        for r in range(2, ws.max_row + 1):
+            ws.cell(r, mcol).number_format = '#,##0.00 "€"'
+    return buf.getvalue()
