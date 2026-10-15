@@ -40,6 +40,11 @@ factures dynamiques** pour le port de **Nador West Med (NWM)**, basée sur le
   totaux HT / TVA / TTC, contre-valeur en MAD **optionnelle** (case à cocher dans la barre
   latérale, désactivée par défaut). **Aperçu intégré** + export
   **HTML imprimable (→ PDF)** et **CSV**.
+- **🧭 Pilotage — opérations & recettes** — pour une **liste de visit ID** : une ligne par
+  opération de pilotage facturée (navire, IMO, LOA, largeur, poste, terminal, **POB** /
+  **POFF**, pilote, barème, majoration, montant identique à la facture). Indicateurs,
+  **graphique des recettes** (par jour, mois, terminal, navire, pilote ou mouvement) et
+  **export Excel** (détail + total + synthèses) **ou CSV**.
 - **🚤 Remorquage — suivi des remorqueurs** — registre des usages de remorqueurs **par
   escale** (un enregistrement = un remorqueur sur un mouvement) : **import PMIS** des
   réservations TOWG (remorqueur, traction, prestataire, heures réelles, annulation) sans
