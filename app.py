@@ -345,9 +345,10 @@ with st.sidebar:
 
 
 (tab_dash, tab_vessels, tab_catalog, tab_calls, tab_invoice, tab_pilot, tab_tugs,
- tab_pmis) = st.tabs(
+ tab_pmis, tab_api) = st.tabs(
     ["📈 Tableau de bord", "🚢 Navires", "📖 Catalogue tarifaire",
-     "🛳️ Escales", "🧾 Factures", "🧭 Pilotage", "🚤 Remorquage", "🔌 PMIS"]
+     "🛳️ Escales", "🧾 Factures", "🧭 Pilotage", "🚤 Remorquage", "🔌 PMIS",
+     "🧪 API PMIS"]
 )
 
 
@@ -1798,6 +1799,250 @@ with tab_pmis:
                                  "spreadsheetml.sheet", use_container_width=True)
                     except Exception as e:  # openpyxl manquant
                         x2.warning(f"Export Excel indisponible ({e})")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  TAB : EXPLORATEUR API PMIS (façon Postman)
+# ═══════════════════════════════════════════════════════════════════════════════
+with tab_api:
+    st.subheader("🧪 Explorateur API PMIS")
+    st.caption("Construisez une requête PMIS avec des **filtres lisibles**, envoyez-la et "
+               "lisez la réponse sous forme de **tableaux** (visites, mouvements, services) "
+               "ou de JSON brut. Les identifiants restent dans les secrets de l'application.")
+    try:
+        import pmis as _pa_pmis
+        import pmis_api as _api
+    except Exception as _e:  # « requests » manquant
+        _api = None
+        st.error(f"Explorateur indisponible ({_e}).")
+
+    if _api is not None:
+        api_client = _pa_pmis.PMISClient()
+        if not api_client.configured():
+            st.warning("PMIS non configuré : vous pouvez construire les requêtes et exporter "
+                       "la collection Postman, mais pas les envoyer. Renseignez les secrets "
+                       "`[pmis]` (Settings → Secrets).")
+        SS.setdefault("api_hist", [])
+        left, right = st.columns([1, 3], gap="large")
+
+        # ---- Colonne gauche : endpoints, Postman, historique
+        with left:
+            st.markdown("##### Endpoints")
+            ep_key = st.radio(
+                "Endpoint", list(_api.ENDPOINTS), key="api_ep", label_visibility="collapsed",
+                format_func=lambda k: f"{_api.ENDPOINTS[k]['method']}  "
+                                      f"{_api.ENDPOINTS[k]['path']} — "
+                                      f"{_api.ENDPOINTS[k]['label']}")
+            ep = _api.ENDPOINTS[ep_key]
+            st.caption(ep["description"])
+            st.divider()
+            st.markdown("##### 📮 Postman")
+            st.caption("Collection Postman v2.1 : login (jeton enregistré automatiquement), "
+                       "refresh, visites, services, billing et la requête courante. Aucun "
+                       "secret : renseignez les variables dans Postman.")
+            cur = SS.get("api_cur")
+            st.download_button(
+                "⬇️ Collection Postman (.json)",
+                json.dumps(_api.postman_collection(cur), ensure_ascii=False, indent=2)
+                .encode("utf-8"), file_name="NWM_PMIS.postman_collection.json",
+                mime="application/json", use_container_width=True, key="api_postman")
+            if SS.api_hist:
+                st.divider()
+                st.markdown("##### 🕘 Historique")
+                st.dataframe(pd.DataFrame(SS.api_hist[::-1]), hide_index=True,
+                             use_container_width=True)
+
+        # ---- Colonne droite : construction de la requête
+        with right:
+            st.markdown("##### Requête")
+            params, body, valid = {}, None, True
+            if ep_key == "visits":
+                st.caption("Filtres de date (au moins une borne « après » et une borne "
+                           "« avant » sont exigées par PMIS) :")
+                defaults = {"ETA": (True, date.today() - timedelta(days=30), None),
+                            "ETD": (True, None, date.today() + timedelta(days=15))}
+                for lbl, fld in _api.VISIT_DATE_FIELDS.items():
+                    on0, a0, b0 = defaults.get(lbl, (False, None, None))
+                    d0, d1, d2 = st.columns([1, 2, 2])
+                    on = d0.checkbox(lbl, value=on0, key=f"api_on_{fld}")
+                    after = d1.date_input(f"{lbl} après le", value=a0, key=f"api_a_{fld}",
+                                          disabled=not on, format="DD/MM/YYYY")
+                    before = d2.date_input(f"{lbl} avant le", value=b0, key=f"api_b_{fld}",
+                                           disabled=not on, format="DD/MM/YYYY")
+                    if on and after:
+                        params[f"{fld}AfterDate"] = after.strftime("%Y-%m-%d")
+                    if on and before:
+                        params[f"{fld}BeforeDate"] = before.strftime("%Y-%m-%d")
+                has_a = any(k.endswith("AfterDate") for k in params)
+                has_b = any(k.endswith("BeforeDate") for k in params)
+                if not (has_a and has_b):
+                    st.warning("Ajoutez au moins une date « après le » et une date "
+                               "« avant le ».")
+                    valid = False
+                f1, f2, f3 = st.columns(3)
+                params["shipName"] = f1.text_input("Navire (nom exact)", key="api_ship").strip()
+                bill = f2.selectbox("Facturable", ["Tous", "Oui", "Non"], key="api_bill")
+                params["billable"] = {"Oui": "true", "Non": "false"}.get(bill)
+                stl = f3.selectbox("Statut", ["Tous"] + list(_pa_pmis.STATUS_LABELS.values()),
+                                   key="api_status")
+                params["visitStatus"] = {v: k for k, v in _pa_pmis.STATUS_LABELS.items()}.get(stl)
+            elif ep_key == "services":
+                d1, d2 = st.columns(2)
+                ba = d1.date_input("Réservé après le", value=date.today() - timedelta(days=30),
+                                   key="api_sba", format="DD/MM/YYYY")
+                bb = d2.date_input("Réservé avant le", value=date.today(), key="api_sbb",
+                                   format="DD/MM/YYYY")
+                params["bookingAfterDate"] = ba.strftime("%Y-%m-%d") if ba else None
+                params["bookingBeforeDate"] = bb.strftime("%Y-%m-%d") if bb else None
+                f1, f2, f3 = st.columns(3)
+                params["shipName"] = f1.text_input("Navire (nom exact)",
+                                                   key="api_sship").strip()
+                sn = f2.selectbox("Service", ["Tous"] + _api.SERVICE_NAMES + ["Autre…"],
+                                  key="api_sname")
+                if sn == "Autre…":
+                    sn = f2.text_input("Nom du service", key="api_sname_other").strip()
+                params["serviceName"] = None if sn in ("Tous", "") else sn
+                sst = f3.selectbox("Statut réservation",
+                                   ["Tous"] + list(_pa_pmis.STATUS_LABELS.values()),
+                                   key="api_sstatus")
+                params["bookingStatus"] = {v: k for k, v in
+                                           _pa_pmis.STATUS_LABELS.items()}.get(sst)
+            else:  # billing (écriture)
+                st.error("⚠️ Cette requête **modifie PMIS** : elle change le statut de "
+                         "facturation des visites indiquées.")
+                bdf = st.data_editor(
+                    pd.DataFrame([{"visit_id": None, "billing_status": 1}]),
+                    num_rows="dynamic", hide_index=True, key="api_bill_rows",
+                    column_config={
+                        "visit_id": st.column_config.NumberColumn("Visit ID", step=1,
+                                                                  format="%d"),
+                        "billing_status": st.column_config.SelectboxColumn(
+                            "Statut", options=[0, 1], required=True,
+                            help="0 = non facturée, 1 = facturée")})
+                body = [{"visit_id": int(r["visit_id"]), "billing_status": int(r["billing_status"])}
+                        for r in bdf.dropna(subset=["visit_id"]).to_dict("records")]
+                st.code(json.dumps(body, indent=2), language="json")
+                confirm = st.checkbox("Je confirme la mise à jour du statut de facturation "
+                                      "dans PMIS", key="api_bill_ok")
+                valid = bool(body) and confirm
+
+            all_pages = False
+            if ep_key != "billing":
+                p1, p2, p3 = st.columns(3)
+                all_pages = p1.toggle("Toutes les pages", value=False, key="api_all",
+                                      help="Parcourt toutes les pages (50 par page).")
+                params["pageSize"] = None if all_pages else p2.number_input(
+                    "Éléments / page", 1, 50, 50, key="api_psize")
+                params["page"] = None if all_pages else p3.number_input(
+                    "Page", 1, 1000, 1, key="api_page")
+
+            shown = _api.clean_params(params)
+            st.code(f"{ep['method']} {_api.preview_url(api_client, ep_key, shown)}"
+                    if ep_key != "billing" else
+                    f"PUT {(api_client.backend_url or 'https://PMIS_IP/pmisBackend/api')}"
+                    "/billing", language="http")
+            with st.expander("cURL"):
+                st.code(_api.curl(api_client, ep_key, shown, body), language="bash")
+            SS.api_cur = {"endpoint": ep_key, "params": shown}
+
+            if st.button(f"🚀 Envoyer ({ep['method']})", type="primary", key="api_send",
+                         disabled=not (valid and api_client.configured())):
+                try:
+                    with st.spinner("Requête en cours…"):
+                        resp = (_api.send_all_pages(api_client, ep_key, shown) if all_pages
+                                else _api.send(api_client, ep_key, shown, body))
+                    SS.api_resp = resp
+                    SS.api_hist.append({
+                        "Heure": resp["sent_at"], "Requête": f"{resp['method']} {ep['path']}",
+                        "Statut": resp["status"], "Lignes": len(_api.rows_of(resp)),
+                        "ms": resp["elapsed_ms"]})
+                    SS.api_hist = SS.api_hist[-15:]
+                except _pa_pmis.PMISError as e:
+                    st.error(str(e))
+
+        # ---- Réponse
+        resp = SS.get("api_resp")
+        if resp:
+            st.divider()
+            ok = resp["ok"]
+            js = resp["json"] if isinstance(resp["json"], dict) else {}
+            data = js.get("data") if isinstance(js.get("data"), dict) else {}
+            rows = _api.rows_of(resp)
+            color = "ok" if ok else "warn"
+            st.markdown(
+                f"<span class='pill {color}'>{resp['status']} {'OK' if ok else 'ERREUR'}</span>"
+                f"<span class='pill'>{resp['method']} {_api.ENDPOINTS[resp['endpoint']]['path']}"
+                f"</span><span class='pill'>⏱ {resp['elapsed_ms']} ms</span>"
+                f"<span class='pill'>📦 {resp['size'] / 1024:,.1f} Ko</span>"
+                f"<span class='pill'>{len(rows)} ligne(s)"
+                + (f" / {data.get('total')} au total" if data.get("total") is not None else "")
+                + (f" · {data.get('pages_lues')} page(s)" if data.get("pages_lues") else "")
+                + f"</span><span class='pill'>envoyée à {resp['sent_at']}</span>",
+                unsafe_allow_html=True)
+            if not ok and js.get("message"):
+                st.error(f"PMIS : {js.get('message')}")
+
+            if resp["endpoint"] == "visits":
+                tables = {"Visites": _api.visits_table(rows),
+                          "Mouvements": _api.movements_table(rows),
+                          "Services": _api.services_of_visits(rows)}
+            elif resp["endpoint"] == "services":
+                tables = {"Services": _api.bookings_table(rows)}
+            else:
+                res = resp["json"] if isinstance(resp["json"], list) else []
+                flat = [d for r in res for d in ((r or {}).get("data") or [])]
+                tables = {"Résultat": pd.DataFrame(flat)}
+
+            q = st.text_input("🔎 Rechercher dans la réponse", key="api_search",
+                              placeholder="navire, IMO, poste, service, pilote…")
+            tables = {k: _api.search(v, q) for k, v in tables.items()}
+            icons = {"Visites": "🚢", "Mouvements": "🧭", "Services": "🛎️", "Résultat": "✅"}
+            tabs = st.tabs([f"{icons.get(k, '')} {k} ({len(v)})" for k, v in tables.items()]
+                           + ["{ } JSON"])
+            for t, (name, df) in zip(tabs, tables.items()):
+                with t:
+                    if df.empty:
+                        st.info("Aucune ligne.")
+                    else:
+                        fmt = {c: st.column_config.NumberColumn(c, format="%d")
+                               for c in ("Visit ID", "Mouvement ID", "Booking ID", "visit_id",
+                                         "GT") if c in df.columns}
+                        fmt.update({c: st.column_config.NumberColumn(c, format="%.1f")
+                                    for c in ("LOA", "Largeur") if c in df.columns})
+                        st.dataframe(df, hide_index=True, use_container_width=True,
+                                     height=min(38 + 35 * len(df), 520), column_config=fmt)
+                        st.download_button(f"⬇️ {name} (CSV)",
+                                           df.to_csv(index=False, sep=";").encode("utf-8-sig"),
+                                           file_name=f"pmis_{name.lower()}.csv",
+                                           mime="text/csv", key=f"api_csv_{name}")
+            with tabs[-1]:
+                if resp["json"] is not None:
+                    st.json(resp["json"], expanded=1)
+                else:
+                    st.code(resp["text"] or "(réponse vide)")
+
+            a1, a2, a3 = st.columns(3)
+            a1.download_button("⬇️ Réponse brute (JSON)",
+                               json.dumps(resp["json"], ensure_ascii=False, indent=2)
+                               .encode("utf-8") if resp["json"] is not None
+                               else (resp["text"] or "").encode("utf-8"),
+                               file_name=f"pmis_{resp['endpoint']}.json",
+                               mime="application/json", use_container_width=True,
+                               key="api_json_dl")
+            try:
+                a2.download_button("⬇️ Tous les tableaux (Excel)", _api.tables_excel(tables),
+                                   file_name=f"pmis_{resp['endpoint']}.xlsx",
+                                   mime="application/vnd.openxmlformats-officedocument."
+                                        "spreadsheetml.sheet", use_container_width=True,
+                                   key="api_xlsx_dl")
+            except Exception as e:  # openpyxl manquant
+                a2.warning(f"Excel indisponible ({e})")
+            if resp["endpoint"] == "visits" and rows and a3.button(
+                    "📥 Utiliser ces visites dans l'onglet PMIS", use_container_width=True,
+                    key="api_to_pmis"):
+                SS.pmis_rows = rows
+                st.success(f"{len(rows)} visite(s) chargée(s) : elles sont disponibles dans "
+                           "les onglets 🔌 PMIS, 🧭 Pilotage et 🚤 Remorquage.")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
